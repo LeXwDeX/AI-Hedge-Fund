@@ -231,8 +231,17 @@ def analyze_growth_and_momentum(financial_line_items: list, prices: list) -> dic
     #
     # We'll give up to 3 points for strong momentum
     if prices and len(prices) > 30:
-        sorted_prices = sorted(prices, key=lambda p: p.time)
-        close_prices = [p.close for p in sorted_prices if p.close is not None]
+        # 兼容 dict 格式（AKSHARE原生），优先用 '日期'，否则用 'time'
+        sorted_prices = sorted(
+            prices,
+            key=lambda p: p["日期"] if isinstance(p, dict) and "日期" in p else getattr(p, "time", None)
+        )
+        # 兼容 dict/对象两种格式
+        close_prices = [
+            p["收盘"] if isinstance(p, dict) and "收盘" in p else getattr(p, "close", None)
+            for p in sorted_prices
+        ]
+        close_prices = [c for c in close_prices if c is not None]
         if len(close_prices) >= 2:
             start_price = close_prices[0]
             end_price = close_prices[-1]
@@ -384,8 +393,17 @@ def analyze_risk_reward(financial_line_items: list, prices: list) -> dict:
     # 2. Price Volatility
     #
     if len(prices) > 10:
-        sorted_prices = sorted(prices, key=lambda p: p.time)
-        close_prices = [p.close for p in sorted_prices if p.close is not None]
+        # 兼容 dict 格式（AKSHARE原生），优先用 '日期'，否则用 'time'
+        sorted_prices = sorted(
+            prices,
+            key=lambda p: p["日期"] if isinstance(p, dict) and "日期" in p else getattr(p, "time", None)
+        )
+        # 兼容 dict/对象两种格式
+        close_prices = [
+            p["收盘"] if isinstance(p, dict) and "收盘" in p else getattr(p, "close", None)
+            for p in sorted_prices
+        ]
+        close_prices = [c for c in close_prices if c is not None]
         if len(close_prices) > 10:
             daily_returns = []
             for i in range(1, len(close_prices)):

@@ -123,76 +123,76 @@ def generate_trading_decision(
         [
             (
                 "system",
-                """You are a portfolio manager making final trading decisions based on multiple tickers.
+                """你是一名投资组合经理，需要基于多个股票的分析信号做出最终交易决策。
 
-              Trading Rules:
-              - For long positions:
-                * Only buy if you have available cash
-                * Only sell if you currently hold long shares of that ticker
-                * Sell quantity must be ≤ current long position shares
-                * Buy quantity must be ≤ max_shares for that ticker
-              
-              - For short positions:
-                * Only short if you have available margin (position value × margin requirement)
-                * Only cover if you currently have short shares of that ticker
-                * Cover quantity must be ≤ current short position shares
-                * Short quantity must respect margin requirements
-              
-              - The max_shares values are pre-calculated to respect position limits
-              - Consider both long and short opportunities based on signals
-              - Maintain appropriate risk management with both long and short exposure
+交易规则：
+- 多头操作：
+  * 只有在有可用现金时才能买入
+  * 只有当前持有该股票多头仓位时才能卖出
+  * 卖出数量不得超过当前多头持仓
+  * 买入数量不得超过该股票的最大可买数量（max_shares）
 
-              Available Actions:
-              - "buy": Open or add to long position
-              - "sell": Close or reduce long position
-              - "short": Open or add to short position
-              - "cover": Close or reduce short position
-              - "hold": No action
+- 空头操作：
+  * 只有在有可用保证金时才能做空（持仓价值 × 保证金比例）
+  * 只有当前持有该股票空头仓位时才能回补
+  * 回补数量不得超过当前空头持仓
+  * 做空数量必须满足保证金要求
 
-              Inputs:
-              - signals_by_ticker: dictionary of ticker → signals
-              - max_shares: maximum shares allowed per ticker
-              - portfolio_cash: current cash in portfolio
-              - portfolio_positions: current positions (both long and short)
-              - current_prices: current prices for each ticker
-              - margin_requirement: current margin requirement for short positions (e.g., 0.5 means 50%)
-              - total_margin_used: total margin currently in use
-              """,
+- max_shares 已预先计算好，确保不超过持仓限制
+- 根据信号同时考虑多头和空头机会
+- 始终保持合理的风险管理，兼顾多头和空头敞口
+
+可用操作：
+- "buy"：开仓或加仓多头
+- "sell"：平仓或减仓多头
+- "short"：开仓或加仓空头
+- "cover"：平仓或减仓空头
+- "hold"：不操作
+
+输入说明：
+- signals_by_ticker：股票代码到信号的字典
+- max_shares：每只股票允许的最大持仓数量
+- portfolio_cash：当前投资组合现金
+- portfolio_positions：当前持仓（包括多头和空头）
+- current_prices：每只股票的当前价格
+- margin_requirement：当前空头保证金比例（如0.5表示50%）
+- total_margin_used：当前已用保证金总额
+""",
             ),
             (
                 "human",
-                """Based on the team's analysis, make your trading decisions for each ticker.
+                """请根据团队的分析结果，为每只股票做出交易决策。
 
-              Here are the signals by ticker:
-              {signals_by_ticker}
+各股票的信号如下：
+{signals_by_ticker}
 
-              Current Prices:
-              {current_prices}
+当前价格：
+{current_prices}
 
-              Maximum Shares Allowed For Purchases:
-              {max_shares}
+最大可买入数量：
+{max_shares}
 
-              Portfolio Cash: {portfolio_cash}
-              Current Positions: {portfolio_positions}
-              Current Margin Requirement: {margin_requirement}
-              Total Margin Used: {total_margin_used}
+投资组合现金：{portfolio_cash}
+当前持仓：{portfolio_positions}
+当前保证金比例：{margin_requirement}
+已用保证金总额：{total_margin_used}
 
-              Output strictly in JSON with the following structure:
-              {{
-                "decisions": {{
-                  "TICKER1": {{
-                    "action": "buy/sell/short/cover/hold",
-                    "quantity": integer,
-                    "confidence": float between 0 and 100,
-                    "reasoning": "string"
-                  }},
-                  "TICKER2": {{
-                    ...
-                  }},
-                  ...
-                }}
-              }}
-              """,
+请严格按如下JSON结构输出：
+{{
+  "decisions": {{
+    "TICKER1": {{
+      "action": "buy/sell/short/cover/hold",
+      "quantity": 整数,
+      "confidence": 0-100之间的浮点数,
+      "reasoning": "string"
+    }},
+    "TICKER2": {{
+      ...
+    }},
+    ...
+  }}
+}}
+""",
             ),
         ]
     )

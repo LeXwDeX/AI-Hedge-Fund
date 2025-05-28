@@ -1,5 +1,5 @@
 from src.graph.state import AgentState, show_agent_reasoning
-from src.tools.api import get_financial_metrics, get_market_cap, search_line_items
+from src.tools.api import get_prices
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
@@ -9,20 +9,15 @@ from src.utils.progress import progress
 from src.utils.llm import call_llm
 import math
 
-
 class BenGrahamSignal(BaseModel):
     signal: Literal["bullish", "bearish", "neutral"]
     confidence: float
     reasoning: str
 
-
 def ben_graham_agent(state: AgentState):
     """
-    Analyzes stocks using Benjamin Graham's classic value-investing principles:
-    1. Earnings stability over multiple years.
-    2. Solid financial strength (low debt, adequate liquidity).
-    3. Discount to intrinsic value (e.g. Graham Number or net-net).
-    4. Adequate margin of safety.
+    使用AKSHARE原生行情数据字段进行格雷厄姆风格分析。
+    仅用行情数据（如收盘价、成交量等），所有分析逻辑直接用AKSHARE字段。
     """
     data = state["data"]
     end_date = data["end_date"]
@@ -32,40 +27,44 @@ def ben_graham_agent(state: AgentState):
     graham_analysis = {}
 
     for ticker in tickers:
-        progress.update_status("ben_graham_agent", ticker, "Fetching financial metrics")
-        metrics = get_financial_metrics(ticker, end_date, period="annual", limit=10)
+        progress.update_status("ben_graham_agent", ticker, "获取AKSHARE行情数据")
+        # 获取最近10天行情数据
+        prices = get_prices(ticker, "1990-01-01", end_date)
+        if not prices:
+            analysis_data[ticker] = {"signal": "neutral", "score": 0, "max_score": 3, "details": "无行情数据"}
+            continue
+        # 只取最近10条
+        prices = prices[-10:]
 
-        progress.update_status("ben_graham_agent", ticker, "Gathering financial line items")
-        financial_line_items = search_line_items(ticker, ["earnings_per_share", "revenue", "net_income", "book_value_per_share", "total_assets", "total_liabilities", "current_assets", "current_liabilities", "dividends_and_other_cash_distributions", "outstanding_shares"], end_date, period="annual", limit=10)
+        progress.update_status("ben_graham_agent", ticker, "分析收盘价稳定性")
+        earnings_analysis = analyze_earnings_stability_akshare(prices)
 
-        progress.update_status("ben_graham_agent", ticker, "Getting market cap")
-        market_cap = get_market_cap(ticker, end_date)
+        progress.update_status("ben_graham_agent", ticker, "分析成交量与换手率")
+        strength_analysis = analyze_financial_strength_akshare(prices)
 
-        # Perform sub-analyses
-        progress.update_status("ben_graham_agent", ticker, "Analyzing earnings stability")
-        earnings_analysis = analyze_earnings_stability(metrics, financial_line_items)
+        progress.update_status("ben_graham_agent", ticker, "分析估值（收盘价/最高/最低）")
+        valuation_analysis = analyze_valuation_graham_akshare(prices)
 
-        progress.update_status("ben_graham_agent", ticker, "Analyzing financial strength")
-        strength_analysis = analyze_financial_strength(financial_line_items)
-
-        progress.update_status("ben_graham_agent", ticker, "Analyzing Graham valuation")
-        valuation_analysis = analyze_valuation_graham(financial_line_items, market_cap)
-
-        # Aggregate scoring
         total_score = earnings_analysis["score"] + strength_analysis["score"] + valuation_analysis["score"]
-        max_possible_score = 15  # total possible from the three analysis functions
+        max_possible_score = 3  # 降级后每项1分
 
-        # Map total_score to signal
-        if total_score >= 0.7 * max_possible_score:
+        if total_score == max_possible_score:
             signal = "bullish"
-        elif total_score <= 0.3 * max_possible_score:
+        elif total_score == 0:
             signal = "bearish"
         else:
             signal = "neutral"
 
-        analysis_data[ticker] = {"signal": signal, "score": total_score, "max_score": max_possible_score, "earnings_analysis": earnings_analysis, "strength_analysis": strength_analysis, "valuation_analysis": valuation_analysis}
+        analysis_data[ticker] = {
+            "signal": signal,
+            "score": total_score,
+            "max_score": max_possible_score,
+            "earnings_analysis": earnings_analysis,
+            "strength_analysis": strength_analysis,
+            "valuation_analysis": valuation_analysis,
+        }
 
-        progress.update_status("ben_graham_agent", ticker, "Generating Ben Graham analysis")
+        progress.update_status("ben_graham_agent", ticker, "生成格雷厄姆风格分析")
         graham_output = generate_graham_output(
             ticker=ticker,
             analysis_data=analysis_data,
@@ -73,23 +72,77 @@ def ben_graham_agent(state: AgentState):
             model_provider=state["metadata"]["model_provider"],
         )
 
-        graham_analysis[ticker] = {"signal": graham_output.signal, "confidence": graham_output.confidence, "reasoning": graham_output.reasoning}
+        graham_analysis[ticker] = {
+            "signal": graham_output.signal,
+            "confidence": graham_output.confidence,
+            "reasoning": graham_output.reasoning,
+        }
 
         progress.update_status("ben_graham_agent", ticker, "Done", analysis=graham_output.reasoning)
 
-    # Wrap results in a single message for the chain
     message = HumanMessage(content=json.dumps(graham_analysis), name="ben_graham_agent")
 
-    # Optionally display reasoning
     if state["metadata"]["show_reasoning"]:
         show_agent_reasoning(graham_analysis, "Ben Graham Agent")
 
-    # Store signals in the overall state
     state["data"]["analyst_signals"]["ben_graham_agent"] = graham_analysis
 
     progress.update_status("ben_graham_agent", None, "Done")
 
     return {"messages": [message], "data": state["data"]}
+
+# 新版分析函数：全部用 AKSHARE 字段
+def analyze_earnings_stability_akshare(prices: list[dict]) -> dict:
+    """
+    用收盘价判断“盈利稳定性”：10日内收盘价波动小于5%记1分，否则0分。
+    """
+    if not prices or len(prices) < 2:
+        return {"score": 0, "details": "无足够收盘价数据"}
+    closes = [float(p["收盘"]) for p in prices if "收盘" in p and p["收盘"] is not None]
+    if not closes or len(closes) < 2:
+        return {"score": 0, "details": "收盘价数据不足"}
+    min_close, max_close = min(closes), max(closes)
+    if min_close == 0:
+        return {"score": 0, "details": "收盘价为0"}
+    fluct = (max_close - min_close) / min_close
+    if fluct < 0.05:
+        return {"score": 1, "details": "10日收盘价波动小于5%，盈利稳定"}
+    else:
+        return {"score": 0, "details": "10日收盘价波动较大"}
+
+def analyze_financial_strength_akshare(prices: list[dict]) -> dict:
+    """
+    用换手率均值判断“财务稳健”：10日平均换手率<10%记1分，否则0分。
+    """
+    if not prices:
+        return {"score": 0, "details": "无行情数据"}
+    turnover = [float(p["换手率"]) for p in prices if "换手率" in p and p["换手率"] not in (None, "")]
+    if not turnover:
+        return {"score": 0, "details": "无换手率数据"}
+    avg_turnover = sum(turnover) / len(turnover)
+    if avg_turnover < 10:
+        return {"score": 1, "details": f"10日平均换手率{avg_turnover:.2f}%，流动性稳健"}
+    else:
+        return {"score": 0, "details": f"10日平均换手率{avg_turnover:.2f}%，流动性偏高"}
+
+def analyze_valuation_graham_akshare(prices: list[dict]) -> dict:
+    """
+    用最高/最低/收盘价判断“估值”：收盘价接近最低价记1分，否则0分。
+    """
+    if not prices:
+        return {"score": 0, "details": "无行情数据"}
+    closes = [float(p["收盘"]) for p in prices if "收盘" in p and p["收盘"] is not None]
+    lows = [float(p["最低"]) for p in prices if "最低" in p and p["最低"] is not None]
+    if not closes or not lows:
+        return {"score": 0, "details": "收盘价或最低价数据不足"}
+    close = closes[-1]
+    low = lows[-1]
+    if low == 0:
+        return {"score": 0, "details": "最低价为0"}
+    if (close - low) / low < 0.03:
+        return {"score": 1, "details": "最新收盘价接近最低价，估值较低"}
+    else:
+        return {"score": 0, "details": "收盘价高于最低价，估值一般"}
 
 
 def analyze_earnings_stability(metrics: list, financial_line_items: list) -> dict:
@@ -293,41 +346,41 @@ def generate_graham_output(
         [
             (
                 "system",
-                """You are a Benjamin Graham AI agent, making investment decisions using his principles:
-            1. Insist on a margin of safety by buying below intrinsic value (e.g., using Graham Number, net-net).
-            2. Emphasize the company's financial strength (low leverage, ample current assets).
-            3. Prefer stable earnings over multiple years.
-            4. Consider dividend record for extra safety.
-            5. Avoid speculative or high-growth assumptions; focus on proven metrics.
-            
-            When providing your reasoning, be thorough and specific by:
-            1. Explaining the key valuation metrics that influenced your decision the most (Graham Number, NCAV, P/E, etc.)
-            2. Highlighting the specific financial strength indicators (current ratio, debt levels, etc.)
-            3. Referencing the stability or instability of earnings over time
-            4. Providing quantitative evidence with precise numbers
-            5. Comparing current metrics to Graham's specific thresholds (e.g., "Current ratio of 2.5 exceeds Graham's minimum of 2.0")
-            6. Using Benjamin Graham's conservative, analytical voice and style in your explanation
-            
-            For example, if bullish: "The stock trades at a 35% discount to net current asset value, providing an ample margin of safety. The current ratio of 2.5 and debt-to-equity of 0.3 indicate strong financial position..."
-            For example, if bearish: "Despite consistent earnings, the current price of $50 exceeds our calculated Graham Number of $35, offering no margin of safety. Additionally, the current ratio of only 1.2 falls below Graham's preferred 2.0 threshold..."
-                        
-            Return a rational recommendation: bullish, bearish, or neutral, with a confidence level (0-100) and thorough reasoning.
-            """,
+                """你是本杰明·格雷厄姆风格的AI投资分析师，请严格依据格雷厄姆的价值投资原则给出投资信号：
+1. 坚持安全边际，只在价格低于内在价值时买入（如使用格雷厄姆数、净流动资产法等）
+2. 强调公司财务稳健（低杠杆、充足流动资产）
+3. 偏好多年稳定盈利的企业
+4. 有分红记录更佳，增加安全性
+5. 避免投机或高增长假设，聚焦已验证的财务指标
+
+推理时请做到：
+1. 详细说明影响你决策的关键估值指标（如格雷厄姆数、NCAV、市盈率等）
+2. 强调具体的财务稳健性指标（流动比率、负债水平等）
+3. 明确引用盈利的稳定性或波动性
+4. 给出定量证据，数字要精确
+5. 将当前指标与格雷厄姆的标准进行对比（如“流动比率2.5高于格雷厄姆最低2.0”）
+6. 用格雷厄姆保守、理性的分析风格表达
+
+例如，看多时：“该股以35%的折价交易于净流动资产值，安全边际充足。流动比率2.5、负债率0.3显示财务状况稳健……”
+例如，看空时：“尽管盈利稳定，但当前股价50美元高于我们计算的格雷厄姆数35美元，缺乏安全边际。此外，流动比率仅1.2，低于格雷厄姆偏好的2.0标准……”
+
+请返回理性建议：bullish、bearish或neutral，并给出0-100的置信度和详细推理。
+""",
             ),
             (
                 "human",
-                """Based on the following analysis, create a Graham-style investment signal:
+                """请根据以下分析，生成一份格雷厄姆风格的投资信号：
 
-            Analysis Data for {ticker}:
-            {analysis_data}
+{ticker}的分析数据：
+{analysis_data}
 
-            Return JSON exactly in this format:
-            {{
-              "signal": "bullish" or "bearish" or "neutral",
-              "confidence": float (0-100),
-              "reasoning": "string"
-            }}
-            """,
+请严格按如下JSON格式返回：
+{{
+  "signal": "bullish" 或 "bearish" 或 "neutral",
+  "confidence": 0-100之间的浮点数,
+  "reasoning": "string"
+}}
+""",
             ),
         ]
     )
