@@ -96,6 +96,28 @@ def generate_trading_decision(
     model_provider: str,
 ) -> PortfolioManagerOutput:
     """Attempts to get a decision from the LLM with retry logic"""
+
+    # 兜底：如果所有ticker的signals_by_ticker[ticker]为空或全为neutral，直接返回hold
+    all_empty = True
+    for ticker in tickers:
+        sigs = signals_by_ticker.get(ticker, {})
+        if sigs:
+            # 只要有一个agent信号不是neutral就不算全空
+            if any(sig.get("signal") not in ["neutral", None] for sig in sigs.values()):
+                all_empty = False
+                break
+    if all_empty:
+        return PortfolioManagerOutput(
+            decisions={
+                ticker: PortfolioDecision(
+                    action="hold",
+                    quantity=0,
+                    confidence=0.0,
+                    reasoning="无有效信号，自动保持观望"
+                ) for ticker in tickers
+            }
+        )
+
     # Create the prompt template
     template = ChatPromptTemplate.from_messages(
         [

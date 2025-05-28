@@ -29,7 +29,7 @@ def charlie_munger_agent(state: AgentState):
     for ticker in tickers:
         progress.update_status("charlie_munger_agent", ticker, "Fetching financial metrics")
         metrics = get_financial_metrics(ticker, end_date, period="annual", limit=10)  # Munger looks at longer periods
-        
+
         progress.update_status("charlie_munger_agent", ticker, "Gathering financial line items")
         financial_line_items = search_line_items(
             ticker,
@@ -53,61 +53,75 @@ def charlie_munger_agent(state: AgentState):
             period="annual",
             limit=10  # Munger examines long-term trends
         )
-        
+
         progress.update_status("charlie_munger_agent", ticker, "Getting market cap")
         market_cap = get_market_cap(ticker, end_date)
-        
+
+        # 兜底：如果metrics为空或market_cap为None，直接返回neutral信号
+        if not metrics or market_cap is None:
+            analysis_data[ticker] = {
+                "signal": "neutral",
+                "score": 0,
+                "max_score": 10,
+                "moat_analysis": {"score": 0, "details": "No data"},
+                "management_analysis": {"score": 0, "details": "No data"},
+                "predictability_analysis": {"score": 0, "details": "No data"},
+                "valuation_analysis": {"score": 0, "details": "No data"},
+                "news_sentiment": "No data",
+                "reasoning": "AKShare接口无数据，无法分析"
+            }
+            munger_analysis[ticker] = {
+                "signal": "neutral",
+                "confidence": 0.0,
+                "reasoning": "AKShare接口无数据，无法分析"
+            }
+            progress.update_status("charlie_munger_agent", ticker, "Done", analysis="AKShare接口无数据，无法分析")
+            continue
+
         progress.update_status("charlie_munger_agent", ticker, "Fetching insider trades")
-        # Munger values management with skin in the game
         insider_trades = get_insider_trades(
             ticker,
             end_date,
-            # Look back 2 years for insider trading patterns
             start_date=None,
             limit=100
         )
-        
+
         progress.update_status("charlie_munger_agent", ticker, "Fetching company news")
-        # Munger avoids businesses with frequent negative press
         company_news = get_company_news(
             ticker,
             end_date,
-            # Look back 1 year for news
             start_date=None,
             limit=100
         )
-        
+
         progress.update_status("charlie_munger_agent", ticker, "Analyzing moat strength")
         moat_analysis = analyze_moat_strength(metrics, financial_line_items)
-        
+
         progress.update_status("charlie_munger_agent", ticker, "Analyzing management quality")
         management_analysis = analyze_management_quality(financial_line_items, insider_trades)
-        
+
         progress.update_status("charlie_munger_agent", ticker, "Analyzing business predictability")
         predictability_analysis = analyze_predictability(financial_line_items)
-        
+
         progress.update_status("charlie_munger_agent", ticker, "Calculating Munger-style valuation")
         valuation_analysis = calculate_munger_valuation(financial_line_items, market_cap)
-        
-        # Combine partial scores with Munger's weighting preferences
-        # Munger weights quality and predictability higher than current valuation
+
         total_score = (
             moat_analysis["score"] * 0.35 +
             management_analysis["score"] * 0.25 +
             predictability_analysis["score"] * 0.25 +
             valuation_analysis["score"] * 0.15
         )
-        
+
         max_possible_score = 10  # Scale to 0-10
-        
-        # Generate a simple buy/hold/sell signal
-        if total_score >= 7.5:  # Munger has very high standards
+
+        if total_score >= 7.5:
             signal = "bullish"
         elif total_score <= 4.5:
             signal = "bearish"
         else:
             signal = "neutral"
-        
+
         analysis_data[ticker] = {
             "signal": signal,
             "score": total_score,
@@ -116,10 +130,9 @@ def charlie_munger_agent(state: AgentState):
             "management_analysis": management_analysis,
             "predictability_analysis": predictability_analysis,
             "valuation_analysis": valuation_analysis,
-            # Include some qualitative assessment from news
             "news_sentiment": analyze_news_sentiment(company_news) if company_news else "No news data available"
         }
-        
+
         progress.update_status("charlie_munger_agent", ticker, "Generating Charlie Munger analysis")
         munger_output = generate_munger_output(
             ticker=ticker, 
@@ -127,15 +140,15 @@ def charlie_munger_agent(state: AgentState):
             model_name=state["metadata"]["model_name"],
             model_provider=state["metadata"]["model_provider"],
         )
-        
+
         munger_analysis[ticker] = {
             "signal": munger_output.signal,
             "confidence": munger_output.confidence,
             "reasoning": munger_output.reasoning
         }
-        
+
         progress.update_status("charlie_munger_agent", ticker, "Done", analysis=munger_output.reasoning)
-    
+
     # Wrap results in a single message for the chain
     message = HumanMessage(
         content=json.dumps(munger_analysis),
