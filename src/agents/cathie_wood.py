@@ -1,5 +1,5 @@
 from src.graph.state import AgentState, show_agent_reasoning
-from src.tools.api import get_financial_metrics, get_market_cap, search_line_items
+from src.tools.api import get_prices
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
@@ -8,20 +8,14 @@ from typing_extensions import Literal
 from src.utils.progress import progress
 from src.utils.llm import call_llm
 
-
 class CathieWoodSignal(BaseModel):
     signal: Literal["bullish", "bearish", "neutral"]
     confidence: float
     reasoning: str
 
-
 def cathie_wood_agent(state: AgentState):
     """
-    Analyzes stocks using Cathie Wood's investing principles and LLM reasoning.
-    1. Prioritizes companies with breakthrough technologies or business models
-    2. Focuses on industries with rapid adoption curves and massive TAM (Total Addressable Market).
-    3. Invests mostly in AI, robotics, genomic sequencing, fintech, and blockchain.
-    4. Willing to endure short-term volatility for long-term gains.
+    只用AKSHARE行情数据（ak.stock_zh_a_hist字段），做统一技术分析（动量/波动/均线/换手率等）。
     """
     data = state["data"]
     end_date = data["end_date"]
@@ -31,66 +25,33 @@ def cathie_wood_agent(state: AgentState):
     cw_analysis = {}
 
     for ticker in tickers:
-        progress.update_status("cathie_wood_agent", ticker, "Fetching financial metrics")
-        metrics = get_financial_metrics(ticker, end_date, period="annual", limit=5)
+        progress.update_status("cathie_wood_agent", ticker, "获取AKSHARE行情数据")
+        prices = get_prices(ticker, "1990-01-01", end_date)
+        if not prices:
+            analysis_data[ticker] = {"signal": "neutral", "score": 0, "max_score": 3, "details": "无行情数据"}
+            continue
+        # 只取最近30条
+        prices = prices[-30:]
 
-        progress.update_status("cathie_wood_agent", ticker, "Gathering financial line items")
-        # Request multiple periods of data (annual or TTM) for a more robust view.
-        financial_line_items = search_line_items(
-            ticker,
-            [
-                "revenue",
-                "gross_margin",
-                "operating_margin",
-                "debt_to_equity",
-                "free_cash_flow",
-                "total_assets",
-                "total_liabilities",
-                "dividends_and_other_cash_distributions",
-                "outstanding_shares",
-                "research_and_development",
-                "capital_expenditure",
-                "operating_expense",
-            ],
-            end_date,
-            period="annual",
-            limit=5,
-        )
-
-        progress.update_status("cathie_wood_agent", ticker, "Getting market cap")
-        market_cap = get_market_cap(ticker, end_date)
-
-        progress.update_status("cathie_wood_agent", ticker, "Analyzing disruptive potential")
-        disruptive_analysis = analyze_disruptive_potential(metrics, financial_line_items)
-
-        progress.update_status("cathie_wood_agent", ticker, "Analyzing innovation-driven growth")
-        innovation_analysis = analyze_innovation_growth(metrics, financial_line_items)
-
-        progress.update_status("cathie_wood_agent", ticker, "Calculating valuation & high-growth scenario")
-        valuation_analysis = analyze_cathie_wood_valuation(financial_line_items, market_cap)
-
-        # Combine partial scores or signals
-        total_score = disruptive_analysis["score"] + innovation_analysis["score"] + valuation_analysis["score"]
-        max_possible_score = 15  # Adjust weighting as desired
-
-        if total_score >= 0.7 * max_possible_score:
-            signal = "bullish"
-        elif total_score <= 0.3 * max_possible_score:
-            signal = "bearish"
-        else:
-            signal = "neutral"
-
-        analysis_data[ticker] = {"signal": signal, "score": total_score, "max_score": max_possible_score, "disruptive_analysis": disruptive_analysis, "innovation_analysis": innovation_analysis, "valuation_analysis": valuation_analysis}
-
-        progress.update_status("cathie_wood_agent", ticker, "Generating Cathie Wood analysis")
-        cw_output = generate_cathie_wood_output(
+        # 直接将行情数据和技术分析提示词交给LLM
+        progress.update_status("cathie_wood_agent", ticker, "生成技术分析信号")
+        cw_output = generate_cathie_wood_technical_output(
             ticker=ticker,
-            analysis_data=analysis_data,
+            prices=prices,
             model_name=state["metadata"]["model_name"],
             model_provider=state["metadata"]["model_provider"],
         )
 
-        cw_analysis[ticker] = {"signal": cw_output.signal, "confidence": cw_output.confidence, "reasoning": cw_output.reasoning}
+        # A股不能做空，bearish时给出替代建议
+        reasoning = cw_output.reasoning
+        if cw_output.signal == "bearish":
+            reasoning = f"{reasoning}（A股市场不能做空，建议观望或空仓，避免盲目操作。）"
+
+        cw_analysis[ticker] = {
+            "signal": cw_output.signal,
+            "confidence": cw_output.confidence,
+            "reasoning": reasoning
+        }
 
         progress.update_status("cathie_wood_agent", ticker, "Done", analysis=cw_output.reasoning)
 
@@ -104,6 +65,52 @@ def cathie_wood_agent(state: AgentState):
     progress.update_status("cathie_wood_agent", None, "Done")
 
     return {"messages": [message], "data": state["data"]}
+
+def generate_cathie_wood_technical_output(
+    ticker: str,
+    prices: list[dict],
+    model_name: str,
+    model_provider: str,
+) -> CathieWoodSignal:
+    """
+    只用AKSHARE行情数据，提示词要求LLM用技术分析方法（如趋势、动量、波动、均线、换手率等）给出bullish/bearish/neutral信号和详细理由。
+    """
+    template = ChatPromptTemplate.from_messages([
+        (
+            "system",
+            """你是技术分析专家。请只基于下方A股行情数据（包含日期、开盘、收盘、最高、最低、成交量、成交额、振幅、涨跌幅、涨跌额、换手率等），用你的技术分析知识（如趋势、动量、波动、均线、换手率、K线形态等）分析该股票当前的盘面特征，给出bullish（看多）、bearish（看空）、neutral（中性）信号，并详细说明理由。禁止参考任何财务、估值、成长等信息。
+数据如下（最近30日）：
+{prices}
+请严格按如下JSON格式返回：
+{{
+  "signal": "bullish" | "bearish" | "neutral",
+  "confidence": 0-100,
+  "reasoning": "string"
+}}
+"""
+        ),
+    ])
+
+    prompt = template.invoke({
+        "prices": json.dumps(prices, ensure_ascii=False, indent=2),
+        "ticker": ticker
+    })
+
+    def create_default_cathie_wood_signal():
+        return CathieWoodSignal(
+            signal="neutral",
+            confidence=0.0,
+            reasoning="Error in analysis, defaulting to neutral"
+        )
+
+    return call_llm(
+        prompt=prompt,
+        model_name=model_name,
+        model_provider=model_provider,
+        pydantic_model=CathieWoodSignal,
+        agent_name="cathie_wood_agent",
+        default_factory=create_default_cathie_wood_signal,
+    )
 
 
 def analyze_disruptive_potential(metrics: list, financial_line_items: list) -> dict:
@@ -371,48 +378,39 @@ def generate_cathie_wood_output(
         [
             (
                 "system",
-                """You are a Cathie Wood AI agent, making investment decisions using her principles:
+                """你是凯茜·伍德（Cathie Wood）风格的AI投资分析师，请严格依据其创新成长投资理念给出投资信号：
 
-            1. Seek companies leveraging disruptive innovation.
-            2. Emphasize exponential growth potential, large TAM.
-            3. Focus on technology, healthcare, or other future-facing sectors.
-            4. Consider multi-year time horizons for potential breakthroughs.
-            5. Accept higher volatility in pursuit of high returns.
-            6. Evaluate management's vision and ability to invest in R&D.
+1. 重点关注颠覆性创新和指数级成长机会，优先投资于AI、机器人、基因科技、金融科技等变革性行业。
+2. 偏好具备远大愿景、强大研发能力和领导力的公司。
+3. 注重长期趋势和大市场空间（TAM），愿意承受短期波动以追求长期高回报。
+4. 关注公司技术壁垒、专利、创新能力及管理层执行力。
+5. 估值可接受高溢价，但需有明确的成长逻辑和数据支撑。
 
-            Rules:
-            - Identify disruptive or breakthrough technology.
-            - Evaluate strong potential for multi-year revenue growth.
-            - Check if the company can scale effectively in a large market.
-            - Use a growth-biased valuation approach.
-            - Provide a data-driven recommendation (bullish, bearish, or neutral).
-            
-            When providing your reasoning, be thorough and specific by:
-            1. Identifying the specific disruptive technologies/innovations the company is leveraging
-            2. Highlighting growth metrics that indicate exponential potential (revenue acceleration, expanding TAM)
-            3. Discussing the long-term vision and transformative potential over 5+ year horizons
-            4. Explaining how the company might disrupt traditional industries or create new markets
-            5. Addressing R&D investment and innovation pipeline that could drive future growth
-            6. Using Cathie Wood's optimistic, future-focused, and conviction-driven voice
-            
-            For example, if bullish: "The company's AI-driven platform is transforming the $500B healthcare analytics market, with evidence of platform adoption accelerating from 40% to 65% YoY. Their R&D investments of 22% of revenue are creating a technological moat that positions them to capture a significant share of this expanding market. The current valuation doesn't reflect the exponential growth trajectory we expect as..."
-            For example, if bearish: "While operating in the genomics space, the company lacks truly disruptive technology and is merely incrementally improving existing techniques. R&D spending at only 8% of revenue signals insufficient investment in breakthrough innovation. With revenue growth slowing from 45% to 20% YoY, there's limited evidence of the exponential adoption curve we look for in transformative companies..."
-            """,
+推理时请做到：
+- 明确指出公司所依托的创新技术/模式及其颠覆性。
+- 强调收入加速、市场空间扩张等成长性指标。
+- 分析公司在未来5年以上的变革潜力和行业影响力。
+- 评估研发投入、创新管线、管理层远见等软硬实力。
+- 给出成长型估值逻辑和定量假设。
+- 风格乐观、前瞻、充满信念。
+
+请返回最终建议（signal: bullish、neutral、bearish），并给出0-100置信度和详细推理说明。
+"""
             ),
             (
                 "human",
-                """Based on the following analysis, create a Cathie Wood-style investment signal.
+                """请根据以下分析，生成一份凯茜·伍德风格的投资信号：
 
-            Analysis Data for {ticker}:
-            {analysis_data}
+{ticker}的分析数据：
+{analysis_data}
 
-            Return the trading signal in this JSON format:
-            {{
-              "signal": "bullish/bearish/neutral",
-              "confidence": float (0-100),
-              "reasoning": "string"
-            }}
-            """,
+请严格按如下JSON格式返回：
+{{
+  "signal": "bullish" | "bearish" | "neutral",
+  "confidence": float (0-100),
+  "reasoning": "string"
+}}
+"""
             ),
         ]
     )

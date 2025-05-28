@@ -16,8 +16,7 @@ class BenGrahamSignal(BaseModel):
 
 def ben_graham_agent(state: AgentState):
     """
-    使用AKSHARE原生行情数据字段进行格雷厄姆风格分析。
-    仅用行情数据（如收盘价、成交量等），所有分析逻辑直接用AKSHARE字段。
+    只用AKSHARE行情数据（ak.stock_zh_a_hist字段），做统一技术分析（动量/波动/均线/换手率等）。
     """
     data = state["data"]
     end_date = data["end_date"]
@@ -28,54 +27,31 @@ def ben_graham_agent(state: AgentState):
 
     for ticker in tickers:
         progress.update_status("ben_graham_agent", ticker, "获取AKSHARE行情数据")
-        # 获取最近10天行情数据
         prices = get_prices(ticker, "1990-01-01", end_date)
         if not prices:
             analysis_data[ticker] = {"signal": "neutral", "score": 0, "max_score": 3, "details": "无行情数据"}
             continue
-        # 只取最近10条
-        prices = prices[-10:]
+        # 只取最近30条
+        prices = prices[-30:]
 
-        progress.update_status("ben_graham_agent", ticker, "分析收盘价稳定性")
-        earnings_analysis = analyze_earnings_stability_akshare(prices)
-
-        progress.update_status("ben_graham_agent", ticker, "分析成交量与换手率")
-        strength_analysis = analyze_financial_strength_akshare(prices)
-
-        progress.update_status("ben_graham_agent", ticker, "分析估值（收盘价/最高/最低）")
-        valuation_analysis = analyze_valuation_graham_akshare(prices)
-
-        total_score = earnings_analysis["score"] + strength_analysis["score"] + valuation_analysis["score"]
-        max_possible_score = 3  # 降级后每项1分
-
-        if total_score == max_possible_score:
-            signal = "bullish"
-        elif total_score == 0:
-            signal = "bearish"
-        else:
-            signal = "neutral"
-
-        analysis_data[ticker] = {
-            "signal": signal,
-            "score": total_score,
-            "max_score": max_possible_score,
-            "earnings_analysis": earnings_analysis,
-            "strength_analysis": strength_analysis,
-            "valuation_analysis": valuation_analysis,
-        }
-
-        progress.update_status("ben_graham_agent", ticker, "生成格雷厄姆风格分析")
-        graham_output = generate_graham_output(
+        # 直接将行情数据和技术分析提示词交给LLM
+        progress.update_status("ben_graham_agent", ticker, "生成技术分析信号")
+        graham_output = generate_graham_technical_output(
             ticker=ticker,
-            analysis_data=analysis_data,
+            prices=prices,
             model_name=state["metadata"]["model_name"],
             model_provider=state["metadata"]["model_provider"],
         )
 
+        # A股不能做空，bearish时给出替代建议
+        reasoning = graham_output.reasoning
+        if graham_output.signal == "bearish":
+            reasoning = f"{reasoning}（A股市场不能做空，建议观望或空仓，避免盲目操作。）"
+
         graham_analysis[ticker] = {
             "signal": graham_output.signal,
             "confidence": graham_output.confidence,
-            "reasoning": graham_output.reasoning,
+            "reasoning": reasoning,
         }
 
         progress.update_status("ben_graham_agent", ticker, "Done", analysis=graham_output.reasoning)
@@ -90,6 +66,52 @@ def ben_graham_agent(state: AgentState):
     progress.update_status("ben_graham_agent", None, "Done")
 
     return {"messages": [message], "data": state["data"]}
+
+def generate_graham_technical_output(
+    ticker: str,
+    prices: list[dict],
+    model_name: str,
+    model_provider: str,
+) -> BenGrahamSignal:
+    """
+    只用AKSHARE行情数据，提示词要求LLM用技术分析方法（如趋势、动量、波动、均线、换手率等）给出bullish/bearish/neutral信号和详细理由。
+    """
+    template = ChatPromptTemplate.from_messages([
+        (
+            "system",
+            """你是技术分析专家。请只基于下方A股行情数据（包含日期、开盘、收盘、最高、最低、成交量、成交额、振幅、涨跌幅、涨跌额、换手率等），用你的技术分析知识（如趋势、动量、波动、均线、换手率、K线形态等）分析该股票当前的盘面特征，给出bullish（看多）、bearish（看空）、neutral（中性）信号，并详细说明理由。禁止参考任何财务、估值、成长等信息。
+数据如下（最近30日）：
+{prices}
+请严格按如下JSON格式返回：
+{{
+  "signal": "bullish" | "bearish" | "neutral",
+  "confidence": 0-100,
+  "reasoning": "string"
+}}
+"""
+        ),
+    ])
+
+    prompt = template.invoke({
+        "prices": json.dumps(prices, ensure_ascii=False, indent=2),
+        "ticker": ticker
+    })
+
+    def create_default_ben_graham_signal():
+        return BenGrahamSignal(
+            signal="neutral",
+            confidence=0.0,
+            reasoning="Error in analysis, defaulting to neutral"
+        )
+
+    return call_llm(
+        prompt=prompt,
+        model_name=model_name,
+        model_provider=model_provider,
+        pydantic_model=BenGrahamSignal,
+        agent_name="ben_graham_agent",
+        default_factory=create_default_ben_graham_signal,
+    )
 
 # 新版分析函数：全部用 AKSHARE 字段
 def analyze_earnings_stability_akshare(prices: list[dict]) -> dict:

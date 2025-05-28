@@ -102,10 +102,22 @@ def technical_analyst_agent(state: AgentState):
             strategy_weights,
         )
 
-        # Generate detailed analysis report for this ticker
+        # 生成策略信号摘要
+        summary = (
+            f"趋势信号: {trend_signals['signal']}，均线/ADX等指标；"
+            f"均值回归: {mean_reversion_signals['signal']}，布林带/RSI等；"
+            f"动量: {momentum_signals['signal']}，量价动能等；"
+            f"波动率: {volatility_signals['signal']}，历史波动/ATR等；"
+            f"统计套利: {stat_arb_signals['signal']}，Hurst/偏度等。"
+        )
+        reasoning = summary
+        if combined_signal["signal"] == "bearish":
+            reasoning = f"{summary}（A股市场不能做空，建议观望或空仓，避免盲目操作。）"
+
         technical_analysis[ticker] = {
             "signal": combined_signal["signal"],
             "confidence": round(combined_signal["confidence"] * 100),
+            "reasoning": reasoning,
             "strategy_signals": {
                 "trend_following": {
                     "signal": trend_signals["signal"],

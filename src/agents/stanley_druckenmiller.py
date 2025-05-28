@@ -1,12 +1,5 @@
 from src.graph.state import AgentState, show_agent_reasoning
-from src.tools.api import (
-    get_financial_metrics,
-    get_market_cap,
-    search_line_items,
-    get_insider_trades,
-    get_company_news,
-    get_prices,
-)
+from src.tools.api import get_prices
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
@@ -14,27 +7,17 @@ import json
 from typing_extensions import Literal
 from src.utils.progress import progress
 from src.utils.llm import call_llm
-import statistics
-
 
 class StanleyDruckenmillerSignal(BaseModel):
     signal: Literal["bullish", "bearish", "neutral"]
     confidence: float
     reasoning: str
 
-
 def stanley_druckenmiller_agent(state: AgentState):
     """
-    Analyzes stocks using Stanley Druckenmiller's investing principles:
-      - Seeking asymmetric risk-reward opportunities
-      - Emphasizing growth, momentum, and sentiment
-      - Willing to be aggressive if conditions are favorable
-      - Focus on preserving capital by avoiding high-risk, low-reward bets
-
-    Returns a bullish/bearish/neutral signal with confidence and reasoning.
+    只用AKSHARE行情数据（ak.stock_zh_a_hist字段），做统一技术分析（动量/波动/均线/换手率等）。
     """
     data = state["data"]
-    start_date = data["start_date"]
     end_date = data["end_date"]
     tickers = data["tickers"]
 
@@ -42,114 +25,36 @@ def stanley_druckenmiller_agent(state: AgentState):
     druck_analysis = {}
 
     for ticker in tickers:
-        progress.update_status("stanley_druckenmiller_agent", ticker, "Fetching financial metrics")
-        metrics = get_financial_metrics(ticker, end_date, period="annual", limit=5)
+        progress.update_status("stanley_druckenmiller_agent", ticker, "获取AKSHARE行情数据")
+        prices = get_prices(ticker, "1990-01-01", end_date)
+        if not prices:
+            analysis_data[ticker] = {"signal": "neutral", "score": 0, "max_score": 3, "details": "无行情数据"}
+            continue
+        # 只取最近30条
+        prices = prices[-30:]
 
-        progress.update_status("stanley_druckenmiller_agent", ticker, "Gathering financial line items")
-        # Include relevant line items for Stan Druckenmiller's approach:
-        #   - Growth & momentum: revenue, EPS, operating_income, ...
-        #   - Valuation: net_income, free_cash_flow, ebit, ebitda
-        #   - Leverage: total_debt, shareholders_equity
-        #   - Liquidity: cash_and_equivalents
-        financial_line_items = search_line_items(
-            ticker,
-            [
-                "revenue",
-                "earnings_per_share",
-                "net_income",
-                "operating_income",
-                "gross_margin",
-                "operating_margin",
-                "free_cash_flow",
-                "capital_expenditure",
-                "cash_and_equivalents",
-                "total_debt",
-                "shareholders_equity",
-                "outstanding_shares",
-                "ebit",
-                "ebitda",
-            ],
-            end_date,
-            period="annual",
-            limit=5,
-        )
-
-        progress.update_status("stanley_druckenmiller_agent", ticker, "Getting market cap")
-        market_cap = get_market_cap(ticker, end_date)
-
-        progress.update_status("stanley_druckenmiller_agent", ticker, "Fetching insider trades")
-        insider_trades = get_insider_trades(ticker, end_date, start_date=None, limit=50)
-
-        progress.update_status("stanley_druckenmiller_agent", ticker, "Fetching company news")
-        company_news = get_company_news(ticker, end_date, start_date=None, limit=50)
-
-        progress.update_status("stanley_druckenmiller_agent", ticker, "Fetching recent price data for momentum")
-        prices = get_prices(ticker, start_date=start_date, end_date=end_date)
-
-        progress.update_status("stanley_druckenmiller_agent", ticker, "Analyzing growth & momentum")
-        growth_momentum_analysis = analyze_growth_and_momentum(financial_line_items, prices)
-
-        progress.update_status("stanley_druckenmiller_agent", ticker, "Analyzing sentiment")
-        sentiment_analysis = analyze_sentiment(company_news)
-
-        progress.update_status("stanley_druckenmiller_agent", ticker, "Analyzing insider activity")
-        insider_activity = analyze_insider_activity(insider_trades)
-
-        progress.update_status("stanley_druckenmiller_agent", ticker, "Analyzing risk-reward")
-        risk_reward_analysis = analyze_risk_reward(financial_line_items, prices)
-
-        progress.update_status("stanley_druckenmiller_agent", ticker, "Performing Druckenmiller-style valuation")
-        valuation_analysis = analyze_druckenmiller_valuation(financial_line_items, market_cap)
-
-        # Combine partial scores with weights typical for Druckenmiller:
-        #   35% Growth/Momentum, 20% Risk/Reward, 20% Valuation,
-        #   15% Sentiment, 10% Insider Activity = 100%
-        total_score = (
-            growth_momentum_analysis["score"] * 0.35
-            + risk_reward_analysis["score"] * 0.20
-            + valuation_analysis["score"] * 0.20
-            + sentiment_analysis["score"] * 0.15
-            + insider_activity["score"] * 0.10
-        )
-
-        max_possible_score = 10
-
-        # Simple bullish/neutral/bearish signal
-        if total_score >= 7.5:
-            signal = "bullish"
-        elif total_score <= 4.5:
-            signal = "bearish"
-        else:
-            signal = "neutral"
-
-        analysis_data[ticker] = {
-            "signal": signal,
-            "score": total_score,
-            "max_score": max_possible_score,
-            "growth_momentum_analysis": growth_momentum_analysis,
-            "sentiment_analysis": sentiment_analysis,
-            "insider_activity": insider_activity,
-            "risk_reward_analysis": risk_reward_analysis,
-            "valuation_analysis": valuation_analysis,
-        }
-
-        progress.update_status("stanley_druckenmiller_agent", ticker, "Generating Stanley Druckenmiller analysis")
-        druck_output = generate_druckenmiller_output(
+        # 直接将行情数据和技术分析提示词交给LLM
+        progress.update_status("stanley_druckenmiller_agent", ticker, "生成技术分析信号")
+        druck_output = generate_druckenmiller_technical_output(
             ticker=ticker,
-            analysis_data=analysis_data,
+            prices=prices,
             model_name=state["metadata"]["model_name"],
             model_provider=state["metadata"]["model_provider"],
         )
 
+        # A股不能做空，bearish时给出替代建议
+        reasoning = druck_output.reasoning
+        if druck_output.signal == "bearish":
+            reasoning = f"{reasoning}（A股市场不能做空，建议观望或空仓，避免盲目操作。）"
+
         druck_analysis[ticker] = {
             "signal": druck_output.signal,
             "confidence": druck_output.confidence,
-            "reasoning": druck_output.reasoning,
+            "reasoning": reasoning
         }
 
         progress.update_status("stanley_druckenmiller_agent", ticker, "Done", analysis=druck_output.reasoning)
 
-    # Wrap results in a single message
     message = HumanMessage(content=json.dumps(druck_analysis), name="stanley_druckenmiller_agent")
 
     if state["metadata"].get("show_reasoning"):
@@ -160,6 +65,52 @@ def stanley_druckenmiller_agent(state: AgentState):
     progress.update_status("stanley_druckenmiller_agent", None, "Done")
     
     return {"messages": [message], "data": state["data"]}
+
+def generate_druckenmiller_technical_output(
+    ticker: str,
+    prices: list[dict],
+    model_name: str,
+    model_provider: str,
+) -> StanleyDruckenmillerSignal:
+    """
+    只用AKSHARE行情数据，提示词要求LLM用技术分析方法（如趋势、动量、波动、均线、换手率等）给出bullish/bearish/neutral信号和详细理由。
+    """
+    template = ChatPromptTemplate.from_messages([
+        (
+            "system",
+            """你是技术分析专家。请只基于下方A股行情数据（包含日期、开盘、收盘、最高、最低、成交量、成交额、振幅、涨跌幅、涨跌额、换手率等），用你的技术分析知识（如趋势、动量、波动、均线、换手率、K线形态等）分析该股票当前的盘面特征，给出bullish（看多）、bearish（看空）、neutral（中性）信号，并详细说明理由。禁止参考任何财务、估值、成长等信息。
+数据如下（最近30日）：
+{prices}
+请严格按如下JSON格式返回：
+{{
+  "signal": "bullish" | "bearish" | "neutral",
+  "confidence": 0-100,
+  "reasoning": "string"
+}}
+"""
+        ),
+    ])
+
+    prompt = template.invoke({
+        "prices": json.dumps(prices, ensure_ascii=False, indent=2),
+        "ticker": ticker
+    })
+
+    def create_default_signal():
+        return StanleyDruckenmillerSignal(
+            signal="neutral",
+            confidence=0.0,
+            reasoning="Error in analysis, defaulting to neutral"
+        )
+
+    return call_llm(
+        prompt=prompt,
+        model_name=model_name,
+        model_provider=model_provider,
+        pydantic_model=StanleyDruckenmillerSignal,
+        agent_name="stanley_druckenmiller_agent",
+        default_factory=create_default_signal,
+    )
 
 
 def analyze_growth_and_momentum(financial_line_items: list, prices: list) -> dict:
@@ -551,48 +502,44 @@ def generate_druckenmiller_output(
     template = ChatPromptTemplate.from_messages(
         [
             (
-              "system",
-              """You are a Stanley Druckenmiller AI agent, making investment decisions using his principles:
-            
-              1. Seek asymmetric risk-reward opportunities (large upside, limited downside).
-              2. Emphasize growth, momentum, and market sentiment.
-              3. Preserve capital by avoiding major drawdowns.
-              4. Willing to pay higher valuations for true growth leaders.
-              5. Be aggressive when conviction is high.
-              6. Cut losses quickly if the thesis changes.
-                            
-              Rules:
-              - Reward companies showing strong revenue/earnings growth and positive stock momentum.
-              - Evaluate sentiment and insider activity as supportive or contradictory signals.
-              - Watch out for high leverage or extreme volatility that threatens capital.
-              - Output a JSON object with signal, confidence, and a reasoning string.
-              
-              When providing your reasoning, be thorough and specific by:
-              1. Explaining the growth and momentum metrics that most influenced your decision
-              2. Highlighting the risk-reward profile with specific numerical evidence
-              3. Discussing market sentiment and catalysts that could drive price action
-              4. Addressing both upside potential and downside risks
-              5. Providing specific valuation context relative to growth prospects
-              6. Using Stanley Druckenmiller's decisive, momentum-focused, and conviction-driven voice
-              
-              For example, if bullish: "The company shows exceptional momentum with revenue accelerating from 22% to 35% YoY and the stock up 28% over the past three months. Risk-reward is highly asymmetric with 70% upside potential based on FCF multiple expansion and only 15% downside risk given the strong balance sheet with 3x cash-to-debt. Insider buying and positive market sentiment provide additional tailwinds..."
-              For example, if bearish: "Despite recent stock momentum, revenue growth has decelerated from 30% to 12% YoY, and operating margins are contracting. The risk-reward proposition is unfavorable with limited 10% upside potential against 40% downside risk. The competitive landscape is intensifying, and insider selling suggests waning confidence. I'm seeing better opportunities elsewhere with more favorable setups..."
-              """,
+                "system",
+                """你是斯坦利·德鲁肯米勒（Stanley Druckenmiller）风格的AI投资分析师，请严格依据其风险收益不对称、成长与动量并重的投资理念给出投资信号：
+
+1. 重点寻找“上行空间远大、下行风险有限”的不对称机会。
+2. 强调收入、盈利的高成长性和股价动量，敢于在趋势明确时重仓进攻。
+3. 关注市场情绪、行业催化剂和资金流向，善于捕捉市场主线。
+4. 对高杠杆、高波动保持警惕，优先保护本金安全。
+5. 愿意为真正的成长龙头支付高估值，但需有数据支撑。
+6. 发现风险时果断止损，风格果敢、灵活。
+
+推理时请做到：
+- 详细分析成长、动量、估值、风险收益比等核心指标。
+- 结合市场情绪、行业催化剂、资金流向等软性因素。
+- 明确指出上行/下行空间的定量依据。
+- 风格果断、趋势导向、充满信念。
+
+请严格按如下JSON格式返回：
+{{
+  "signal": "bullish" | "bearish" | "neutral",
+  "confidence": float (0-100),
+  "reasoning": "string"
+}}
+"""
             ),
             (
-              "human",
-              """Based on the following analysis, create a Druckenmiller-style investment signal.
+                "human",
+                """请根据以下分析，生成一份德鲁肯米勒风格的投资信号：
 
-              Analysis Data for {ticker}:
-              {analysis_data}
+{ticker}的分析数据：
+{analysis_data}
 
-              Return the trading signal in this JSON format:
-              {{
-                "signal": "bullish/bearish/neutral",
-                "confidence": float (0-100),
-                "reasoning": "string"
-              }}
-              """,
+请严格按如下JSON格式返回：
+{{
+  "signal": "bullish" | "bearish" | "neutral",
+  "confidence": float (0-100),
+  "reasoning": "string"
+}}
+"""
             ),
         ]
     )

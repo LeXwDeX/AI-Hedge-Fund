@@ -1,130 +1,56 @@
-from __future__ import annotations
-
-import json
-from typing_extensions import Literal
-from pydantic import BaseModel
-
 from src.graph.state import AgentState, show_agent_reasoning
+from src.tools.api import get_prices
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage
-
-from src.tools.api import (
-    get_financial_metrics,
-    get_market_cap,
-    search_line_items,
-)
-from src.utils.llm import call_llm
+from pydantic import BaseModel
+import json
+from typing_extensions import Literal
 from src.utils.progress import progress
-
+from src.utils.llm import call_llm
 
 class AswathDamodaranSignal(BaseModel):
     signal: Literal["bullish", "bearish", "neutral"]
-    confidence: float          # 0‒100
+    confidence: float
     reasoning: str
-
 
 def aswath_damodaran_agent(state: AgentState):
     """
-    Analyze US equities through Aswath Damodaran’s intrinsic‑value lens:
-      • Cost of Equity via CAPM (risk‑free + β·ERP)
-      • 5‑yr revenue / FCFF growth trends & reinvestment efficiency
-      • FCFF‑to‑Firm DCF → equity value → per‑share intrinsic value
-      • Cross‑check with relative valuation (PE vs. Fwd PE sector median proxy)
-    Produces a trading signal and explanation in Damodaran’s analytical voice.
+    只用AKSHARE行情数据（ak.stock_zh_a_hist字段），做统一技术分析（动量/波动/均线/换手率等）。
     """
-    data      = state["data"]
-    end_date  = data["end_date"]
-    tickers   = data["tickers"]
+    data = state["data"]
+    end_date = data["end_date"]
+    tickers = data["tickers"]
 
-    analysis_data: dict[str, dict] = {}
-    damodaran_signals: dict[str, dict] = {}
+    analysis_data = {}
+    damodaran_signals = {}
 
     for ticker in tickers:
-        # ─── Fetch core data ────────────────────────────────────────────────────
-        progress.update_status("aswath_damodaran_agent", ticker, "Fetching financial metrics")
-        metrics = get_financial_metrics(ticker, end_date, period="ttm", limit=5)
+        progress.update_status("aswath_damodaran_agent", ticker, "获取AKSHARE行情数据")
+        prices = get_prices(ticker, "1990-01-01", end_date)
+        if not prices:
+            analysis_data[ticker] = {"signal": "neutral", "score": 0, "max_score": 3, "details": "无行情数据"}
+            continue
+        # 只取最近30条
+        prices = prices[-30:]
 
-        progress.update_status("aswath_damodaran_agent", ticker, "Fetching financial line items")
-        line_items = search_line_items(
-            ticker,
-            [
-                "free_cash_flow",
-                "ebit",
-                "interest_expense",
-                "capital_expenditure",
-                "depreciation_and_amortization",
-                "outstanding_shares",
-                "net_income",
-                "total_debt",
-            ],
-            end_date,
-        )
-
-        progress.update_status("aswath_damodaran_agent", ticker, "Getting market cap")
-        market_cap = get_market_cap(ticker, end_date)
-
-        # ─── Analyses ───────────────────────────────────────────────────────────
-        progress.update_status("aswath_damodaran_agent", ticker, "Analyzing growth and reinvestment")
-        growth_analysis = analyze_growth_and_reinvestment(metrics, line_items)
-
-        progress.update_status("aswath_damodaran_agent", ticker, "Analyzing risk profile")
-        risk_analysis = analyze_risk_profile(metrics, line_items)
-
-        progress.update_status("aswath_damodaran_agent", ticker, "Calculating intrinsic value (DCF)")
-        intrinsic_val_analysis = calculate_intrinsic_value_dcf(metrics, line_items, risk_analysis)
-
-        progress.update_status("aswath_damodaran_agent", ticker, "Assessing relative valuation")
-        relative_val_analysis = analyze_relative_valuation(metrics)
-
-        # ─── Score & margin of safety ──────────────────────────────────────────
-        total_score = (
-            growth_analysis["score"]
-            + risk_analysis["score"]
-            + relative_val_analysis["score"]
-        )
-        max_score = growth_analysis["max_score"] + risk_analysis["max_score"] + relative_val_analysis["max_score"]
-
-        intrinsic_value = intrinsic_val_analysis["intrinsic_value"]
-        margin_of_safety = (
-            (intrinsic_value - market_cap) / market_cap if intrinsic_value and market_cap else None
-        )
-
-        # Decision rules (Damodaran tends to act with ~20‑25 % MOS)
-        if margin_of_safety is not None and margin_of_safety >= 0.25:
-            signal = "bullish"
-        elif margin_of_safety is not None and margin_of_safety <= -0.25:
-            signal = "bearish"
-        else:
-            signal = "neutral"
-
-        confidence = min(max(abs(margin_of_safety or 0) * 200, 10), 100)  # simple proxy 10‑100
-
-        analysis_data[ticker] = {
-            "signal": signal,
-            "score": total_score,
-            "max_score": max_score,
-            "margin_of_safety": margin_of_safety,
-            "growth_analysis": growth_analysis,
-            "risk_analysis": risk_analysis,
-            "relative_val_analysis": relative_val_analysis,
-            "intrinsic_val_analysis": intrinsic_val_analysis,
-            "market_cap": market_cap,
-        }
-
-        # ─── LLM: craft Damodaran‑style narrative ──────────────────────────────
-        progress.update_status("aswath_damodaran_agent", ticker, "Generating Damodaran analysis")
-        damodaran_output = generate_damodaran_output(
+        # 直接将行情数据和技术分析提示词交给LLM
+        progress.update_status("aswath_damodaran_agent", ticker, "生成技术分析信号")
+        damodaran_output = generate_damodaran_technical_output(
             ticker=ticker,
-            analysis_data=analysis_data,
+            prices=prices,
             model_name=state["metadata"]["model_name"],
             model_provider=state["metadata"]["model_provider"],
         )
 
-        damodaran_signals[ticker] = damodaran_output.model_dump()
+        # A股不能做空，bearish时给出替代建议
+        output_dict = damodaran_output.model_dump()
+        if output_dict.get("signal") == "bearish":
+            output_dict["reasoning"] = f"{output_dict['reasoning']}（A股市场不能做空，建议观望或空仓，避免盲目操作。）"
+
+        damodaran_signals[ticker] = output_dict
 
         progress.update_status("aswath_damodaran_agent", ticker, "Done", analysis=damodaran_output.reasoning)
 
-    # ─── Push message back to graph state ──────────────────────────────────────
     message = HumanMessage(content=json.dumps(damodaran_signals), name="aswath_damodaran_agent")
 
     if state["metadata"]["show_reasoning"]:
@@ -134,6 +60,52 @@ def aswath_damodaran_agent(state: AgentState):
     progress.update_status("aswath_damodaran_agent", None, "Done")
 
     return {"messages": [message], "data": state["data"]}
+
+def generate_damodaran_technical_output(
+    ticker: str,
+    prices: list[dict],
+    model_name: str,
+    model_provider: str,
+) -> AswathDamodaranSignal:
+    """
+    只用AKSHARE行情数据，提示词要求LLM用技术分析方法（如趋势、动量、波动、均线、换手率等）给出bullish/bearish/neutral信号和详细理由。
+    """
+    template = ChatPromptTemplate.from_messages([
+        (
+            "system",
+            """你是技术分析专家。请只基于下方A股行情数据（包含日期、开盘、收盘、最高、最低、成交量、成交额、振幅、涨跌幅、涨跌额、换手率等），用你的技术分析知识（如趋势、动量、波动、均线、换手率、K线形态等）分析该股票当前的盘面特征，给出bullish（看多）、bearish（看空）、neutral（中性）信号，并详细说明理由。禁止参考任何财务、估值、成长等信息。
+数据如下（最近30日）：
+{prices}
+请严格按如下JSON格式返回：
+{{
+  "signal": "bullish" | "bearish" | "neutral",
+  "confidence": 0-100,
+  "reasoning": "string"
+}}
+"""
+        ),
+    ])
+
+    prompt = template.invoke({
+        "prices": json.dumps(prices, ensure_ascii=False, indent=2),
+        "ticker": ticker
+    })
+
+    def default_signal():
+        return AswathDamodaranSignal(
+            signal="neutral",
+            confidence=0.0,
+            reasoning="Parsing error; defaulting to neutral",
+        )
+
+    return call_llm(
+        prompt=prompt,
+        model_name=model_name,
+        model_provider=model_provider,
+        pydantic_model=AswathDamodaranSignal,
+        agent_name="aswath_damodaran_agent",
+        default_factory=default_signal,
+    )
 
 
 # ────────────────────────────────────────────────────────────────────────────────

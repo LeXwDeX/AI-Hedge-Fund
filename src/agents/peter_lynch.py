@@ -1,12 +1,5 @@
 from src.graph.state import AgentState, show_agent_reasoning
-from src.tools.api import (
-    get_financial_metrics,
-    get_market_cap,
-    search_line_items,
-    get_insider_trades,
-    get_company_news,
-    get_prices,
-)
+from src.tools.api import get_prices
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
@@ -15,33 +8,16 @@ from typing_extensions import Literal
 from src.utils.progress import progress
 from src.utils.llm import call_llm
 
-
 class PeterLynchSignal(BaseModel):
-    """
-    Container for the Peter Lynch-style output signal.
-    """
     signal: Literal["bullish", "bearish", "neutral"]
     confidence: float
     reasoning: str
 
-
 def peter_lynch_agent(state: AgentState):
     """
-    Analyzes stocks using Peter Lynch's investing principles:
-      - Invest in what you know (clear, understandable businesses).
-      - Growth at a Reasonable Price (GARP), emphasizing the PEG ratio.
-      - Look for consistent revenue & EPS increases and manageable debt.
-      - Be alert for potential "ten-baggers" (high-growth opportunities).
-      - Avoid overly complex or highly leveraged businesses.
-      - Use news sentiment and insider trades for secondary inputs.
-      - If fundamentals strongly align with GARP, be more aggressive.
-
-    The result is a bullish/bearish/neutral signal, along with a
-    confidence (0–100) and a textual reasoning explanation.
+    只用AKSHARE行情数据（ak.stock_zh_a_hist字段），做统一技术分析（动量/波动/均线/换手率等）。
     """
-
     data = state["data"]
-    start_date = data["start_date"]
     end_date = data["end_date"]
     tickers = data["tickers"]
 
@@ -49,120 +25,92 @@ def peter_lynch_agent(state: AgentState):
     lynch_analysis = {}
 
     for ticker in tickers:
-        progress.update_status("peter_lynch_agent", ticker, "Fetching financial metrics")
-        metrics = get_financial_metrics(ticker, end_date, period="annual", limit=5)
+        progress.update_status("peter_lynch_agent", ticker, "获取AKSHARE行情数据")
+        prices = get_prices(ticker, "1990-01-01", end_date)
+        if not prices:
+            analysis_data[ticker] = {"signal": "neutral", "score": 0, "max_score": 3, "details": "无行情数据"}
+            continue
+        # 只取最近30条
+        prices = prices[-30:]
 
-        progress.update_status("peter_lynch_agent", ticker, "Gathering financial line items")
-        # Relevant line items for Peter Lynch's approach
-        financial_line_items = search_line_items(
-            ticker,
-            [
-                "revenue",
-                "earnings_per_share",
-                "net_income",
-                "operating_income",
-                "gross_margin",
-                "operating_margin",
-                "free_cash_flow",
-                "capital_expenditure",
-                "cash_and_equivalents",
-                "total_debt",
-                "shareholders_equity",
-                "outstanding_shares",
-            ],
-            end_date,
-            period="annual",
-            limit=5,
-        )
-
-        progress.update_status("peter_lynch_agent", ticker, "Getting market cap")
-        market_cap = get_market_cap(ticker, end_date)
-
-        progress.update_status("peter_lynch_agent", ticker, "Fetching insider trades")
-        insider_trades = get_insider_trades(ticker, end_date, start_date=None, limit=50)
-
-        progress.update_status("peter_lynch_agent", ticker, "Fetching company news")
-        company_news = get_company_news(ticker, end_date, start_date=None, limit=50)
-
-        progress.update_status("peter_lynch_agent", ticker, "Fetching recent price data for reference")
-        prices = get_prices(ticker, start_date=start_date, end_date=end_date)
-
-        # Perform sub-analyses:
-        progress.update_status("peter_lynch_agent", ticker, "Analyzing growth")
-        growth_analysis = analyze_lynch_growth(financial_line_items)
-
-        progress.update_status("peter_lynch_agent", ticker, "Analyzing fundamentals")
-        fundamentals_analysis = analyze_lynch_fundamentals(financial_line_items)
-
-        progress.update_status("peter_lynch_agent", ticker, "Analyzing valuation (focus on PEG)")
-        valuation_analysis = analyze_lynch_valuation(financial_line_items, market_cap)
-
-        progress.update_status("peter_lynch_agent", ticker, "Analyzing sentiment")
-        sentiment_analysis = analyze_sentiment(company_news)
-
-        progress.update_status("peter_lynch_agent", ticker, "Analyzing insider activity")
-        insider_activity = analyze_insider_activity(insider_trades)
-
-        # Combine partial scores with weights typical for Peter Lynch:
-        #   30% Growth, 25% Valuation, 20% Fundamentals,
-        #   15% Sentiment, 10% Insider Activity = 100%
-        total_score = (
-            growth_analysis["score"] * 0.30
-            + valuation_analysis["score"] * 0.25
-            + fundamentals_analysis["score"] * 0.20
-            + sentiment_analysis["score"] * 0.15
-            + insider_activity["score"] * 0.10
-        )
-
-        max_possible_score = 10.0
-
-        # Map final score to signal
-        if total_score >= 7.5:
-            signal = "bullish"
-        elif total_score <= 4.5:
-            signal = "bearish"
-        else:
-            signal = "neutral"
-
-        analysis_data[ticker] = {
-            "signal": signal,
-            "score": total_score,
-            "max_score": max_possible_score,
-            "growth_analysis": growth_analysis,
-            "valuation_analysis": valuation_analysis,
-            "fundamentals_analysis": fundamentals_analysis,
-            "sentiment_analysis": sentiment_analysis,
-            "insider_activity": insider_activity,
-        }
-
-        progress.update_status("peter_lynch_agent", ticker, "Generating Peter Lynch analysis")
-        lynch_output = generate_lynch_output(
+        # 直接将行情数据和技术分析提示词交给LLM
+        progress.update_status("peter_lynch_agent", ticker, "生成技术分析信号")
+        lynch_output = generate_lynch_technical_output(
             ticker=ticker,
-            analysis_data=analysis_data[ticker],
+            prices=prices,
             model_name=state["metadata"]["model_name"],
             model_provider=state["metadata"]["model_provider"],
         )
 
+        # A股不能做空，bearish时给出替代建议
+        reasoning = lynch_output.reasoning
+        if lynch_output.signal == "bearish":
+            reasoning = f"{reasoning}（A股市场不能做空，建议观望或空仓，避免盲目操作。）"
+
         lynch_analysis[ticker] = {
             "signal": lynch_output.signal,
             "confidence": lynch_output.confidence,
-            "reasoning": lynch_output.reasoning,
+            "reasoning": reasoning
         }
 
         progress.update_status("peter_lynch_agent", ticker, "Done", analysis=lynch_output.reasoning)
 
-    # Wrap up results
     message = HumanMessage(content=json.dumps(lynch_analysis), name="peter_lynch_agent")
 
     if state["metadata"].get("show_reasoning"):
         show_agent_reasoning(lynch_analysis, "Peter Lynch Agent")
 
-    # Save signals to state
     state["data"]["analyst_signals"]["peter_lynch_agent"] = lynch_analysis
 
     progress.update_status("peter_lynch_agent", None, "Done")
 
     return {"messages": [message], "data": state["data"]}
+
+def generate_lynch_technical_output(
+    ticker: str,
+    prices: list[dict],
+    model_name: str,
+    model_provider: str,
+) -> PeterLynchSignal:
+    """
+    只用AKSHARE行情数据，提示词要求LLM用技术分析方法（如趋势、动量、波动、均线、换手率等）给出bullish/bearish/neutral信号和详细理由。
+    """
+    template = ChatPromptTemplate.from_messages([
+        (
+            "system",
+            """你是技术分析专家。请只基于下方A股行情数据（包含日期、开盘、收盘、最高、最低、成交量、成交额、振幅、涨跌幅、涨跌额、换手率等），用你的技术分析知识（如趋势、动量、波动、均线、换手率、K线形态等）分析该股票当前的盘面特征，给出bullish（看多）、bearish（看空）、neutral（中性）信号，并详细说明理由。禁止参考任何财务、估值、成长等信息。
+数据如下（最近30日）：
+{prices}
+请严格按如下JSON格式返回：
+{{
+  "signal": "bullish" | "bearish" | "neutral",
+  "confidence": 0-100,
+  "reasoning": "string"
+}}
+"""
+        ),
+    ])
+
+    prompt = template.invoke({
+        "prices": json.dumps(prices, ensure_ascii=False, indent=2),
+        "ticker": ticker
+    })
+
+    def create_default_signal():
+        return PeterLynchSignal(
+            signal="neutral",
+            confidence=0.0,
+            reasoning="Error in analysis; defaulting to neutral"
+        )
+
+    return call_llm(
+        prompt=prompt,
+        model_name=model_name,
+        model_provider=model_provider,
+        pydantic_model=PeterLynchSignal,
+        agent_name="peter_lynch_agent",
+        default_factory=create_default_signal,
+    )
 
 
 def analyze_lynch_growth(financial_line_items: list) -> dict:
@@ -451,40 +399,44 @@ def generate_lynch_output(
         [
             (
                 "system",
-                """You are a Peter Lynch AI agent. You make investment decisions based on Peter Lynch's well-known principles:
-                
-                1. Invest in What You Know: Emphasize understandable businesses, possibly discovered in everyday life.
-                2. Growth at a Reasonable Price (GARP): Rely on the PEG ratio as a prime metric.
-                3. Look for 'Ten-Baggers': Companies capable of growing earnings and share price substantially.
-                4. Steady Growth: Prefer consistent revenue/earnings expansion, less concern about short-term noise.
-                5. Avoid High Debt: Watch for dangerous leverage.
-                6. Management & Story: A good 'story' behind the stock, but not overhyped or too complex.
-                
-                When you provide your reasoning, do it in Peter Lynch's voice:
-                - Cite the PEG ratio
-                - Mention 'ten-bagger' potential if applicable
-                - Refer to personal or anecdotal observations (e.g., "If my kids love the product...")
-                - Use practical, folksy language
-                - Provide key positives and negatives
-                - Conclude with a clear stance (bullish, bearish, or neutral)
-                
-                Return your final output strictly in JSON with the fields:
-                {{
-                  "signal": "bullish" | "bearish" | "neutral",
-                  "confidence": 0 to 100,
-                  "reasoning": "string"
-                }}
-                """,
+                """你是彼得·林奇（Peter Lynch）风格的AI投资分析师，请严格依据林奇的投资理念给出投资信号：
+
+1. 投资于你能理解的企业（“投资你熟悉的”），关注生活中常见、易懂的商业模式。
+2. 强调合理价格下的成长（GARP），PEG比率是核心指标。
+3. 寻找“十倍股”潜力公司（长期业绩和股价有望大幅增长）。
+4. 偏好收入和盈利持续增长、负债适度、管理层稳健的公司。
+5. 避免复杂、杠杆高、故事过于花哨的企业。
+6. 风格务实、接地气，善于用生活化视角发现投资机会。
+
+推理时请做到：
+- 用通俗语言讲清公司的成长故事和核心逻辑。
+- 分析收入、EPS成长、PEG比率、资产负债表等关键指标。
+- 如有“十倍股”潜力请明确指出。
+- 结合生活观察举例（如“如果我家人都在用这个产品……”）。
+- 总结优缺点，结论明确（bullish、bearish、neutral）。
+
+请严格按如下JSON格式返回：
+{{
+  "signal": "bullish" | "bearish" | "neutral",
+  "confidence": 0-100,
+  "reasoning": "string"
+}}
+"""
             ),
             (
                 "human",
-                """Based on the following analysis data for {ticker}, produce your Peter Lynch–style investment signal.
+                """请根据以下分析数据，生成一份彼得·林奇风格的投资信号：
 
-                Analysis Data:
-                {analysis_data}
+{ticker}的分析数据：
+{analysis_data}
 
-                Return only valid JSON with "signal", "confidence", and "reasoning".
-                """,
+请严格按如下JSON格式返回：
+{{
+  "signal": "bullish" | "bearish" | "neutral",
+  "confidence": 0-100,
+  "reasoning": "string"
+}}
+"""
             ),
         ]
     )
