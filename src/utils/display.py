@@ -1,8 +1,11 @@
 from colorama import Fore, Style
-from tabulate import tabulate
+from rich.console import Console
+from rich.table import Table
 from .analysts import ANALYST_ORDER
 import os
 import json
+
+console = Console()
 
 
 def sort_agent_signals(signals):
@@ -16,214 +19,113 @@ def sort_agent_signals(signals):
 
 def print_trading_output(result: dict) -> None:
     """
-    Print formatted trading results with colored tables for multiple tickers.
-
-    Args:
-        result (dict): Dictionary containing decisions and analyst signals for multiple tickers
+    用 rich.table 美观输出多 ticker 的分析和决策，自动适配中英文宽度。
     """
     decisions = result.get("decisions")
     if not decisions:
-        print(f"{Fore.RED}No trading decisions available{Style.RESET_ALL}")
+        console.print("[red]No trading decisions available[/red]")
         return
 
-    # Print decisions for each ticker
     for ticker, decision in decisions.items():
-        print(f"\n{Fore.WHITE}{Style.BRIGHT}Analysis for {Fore.CYAN}{ticker}{Style.RESET_ALL}")
-        print(f"{Fore.WHITE}{Style.BRIGHT}{'=' * 50}{Style.RESET_ALL}")
+        console.print(f"\n[bold white]Analysis for [cyan]{ticker}[/cyan][/bold white]")
+        console.print(f"[bold white]{'=' * 50}[/bold white]")
 
-        # Prepare analyst signals table for this ticker
-        table_data = []
+        # AGENT 分析表
+        table = Table(show_header=True, header_style="bold magenta", box=None)
+        table.add_column("Agent", style="cyan", no_wrap=True)
+        table.add_column("Signal", style="bold", justify="center")
+        table.add_column("Confidence", style="white", justify="right")
+        table.add_column("Reasoning", style="white", overflow="fold")
+
+        agent_signals = []
         for agent, signals in result.get("analyst_signals", {}).items():
             if ticker not in signals:
                 continue
-                
-            # Skip Risk Management agent in the signals section
             if agent == "risk_management_agent":
                 continue
-
             signal = signals[ticker]
             agent_name = agent.replace("_agent", "").replace("_", " ").title()
             signal_type = signal.get("signal", "").upper()
             confidence = signal.get("confidence", 0)
-
             signal_color = {
-                "BULLISH": Fore.GREEN,
-                "BEARISH": Fore.RED,
-                "NEUTRAL": Fore.YELLOW,
-            }.get(signal_type, Fore.WHITE)
-            
-            # Get reasoning if available
-            reasoning_str = ""
-            if "reasoning" in signal and signal["reasoning"]:
-                reasoning = signal["reasoning"]
-                
-                # Handle different types of reasoning (string, dict, etc.)
-                if isinstance(reasoning, str):
-                    reasoning_str = reasoning
-                elif isinstance(reasoning, dict):
-                    # Convert dict to string representation
-                    reasoning_str = json.dumps(reasoning, indent=2)
-                else:
-                    # Convert any other type to string
-                    reasoning_str = str(reasoning)
-                
-                # Wrap long reasoning text to make it more readable
-                wrapped_reasoning = ""
-                current_line = ""
-                # Use a fixed width of 60 characters to match the table column width
-                max_line_length = 60
-                for word in reasoning_str.split():
-                    if len(current_line) + len(word) + 1 > max_line_length:
-                        wrapped_reasoning += current_line + "\n"
-                        current_line = word
-                    else:
-                        if current_line:
-                            current_line += " " + word
-                        else:
-                            current_line = word
-                if current_line:
-                    wrapped_reasoning += current_line
-                
-                reasoning_str = wrapped_reasoning
-
-            table_data.append(
-                [
-                    f"{Fore.CYAN}{agent_name}{Style.RESET_ALL}",
-                    f"{signal_color}{signal_type}{Style.RESET_ALL}",
-                    f"{Fore.WHITE}{confidence}%{Style.RESET_ALL}",
-                    f"{Fore.WHITE}{reasoning_str}{Style.RESET_ALL}",
-                ]
+                "BULLISH": "green",
+                "BEARISH": "red",
+                "NEUTRAL": "yellow",
+            }.get(signal_type, "white")
+            # Reasoning
+            reasoning = signal.get("reasoning", "")
+            if isinstance(reasoning, dict):
+                reasoning = json.dumps(reasoning, ensure_ascii=False, indent=2)
+            elif not isinstance(reasoning, str):
+                reasoning = str(reasoning)
+            agent_signals.append(
+                (agent_name, f"[{signal_color}]{signal_type}[/{signal_color}]", f"{confidence:.1f}%", reasoning)
             )
+        agent_signals = sort_agent_signals(agent_signals)
+        for row in agent_signals:
+            table.add_row(*row)
+        console.print(f"\n[bold white]AGENT ANALYSIS:[/bold white] [cyan]{ticker}[/cyan]")
+        console.print(table)
 
-        # Sort the signals according to the predefined order
-        table_data = sort_agent_signals(table_data)
-
-        print(f"\n{Fore.WHITE}{Style.BRIGHT}AGENT ANALYSIS:{Style.RESET_ALL} [{Fore.CYAN}{ticker}{Style.RESET_ALL}]")
-        print(
-            tabulate(
-                table_data,
-                headers=[f"{Fore.WHITE}Agent", "Signal", "Confidence", "Reasoning"],
-                tablefmt="grid",
-                colalign=("left", "center", "right", "left"),
-            )
-        )
-
-        # Print Trading Decision Table
+        # 决策表
         action = decision.get("action", "").upper()
         action_color = {
-            "BUY": Fore.GREEN,
-            "SELL": Fore.RED,
-            "HOLD": Fore.YELLOW,
-            "COVER": Fore.GREEN,
-            "SHORT": Fore.RED,
-        }.get(action, Fore.WHITE)
-
-        # Get reasoning and format it
+            "BUY": "green",
+            "SELL": "red",
+            "HOLD": "yellow",
+            "COVER": "green",
+            "SHORT": "red",
+        }.get(action, "white")
+        decision_table = Table(show_header=False, box=None)
+        decision_table.add_row("Action", f"[{action_color}]{action}[/{action_color}]")
+        decision_table.add_row("Quantity", f"[{action_color}]{decision.get('quantity')}[/{action_color}]")
+        decision_table.add_row("Confidence", f"[white]{decision.get('confidence'):.1f}%[/white]")
         reasoning = decision.get("reasoning", "")
-        # Wrap long reasoning text to make it more readable
-        wrapped_reasoning = ""
-        if reasoning:
-            current_line = ""
-            # Use a fixed width of 60 characters to match the table column width
-            max_line_length = 60
-            for word in reasoning.split():
-                if len(current_line) + len(word) + 1 > max_line_length:
-                    wrapped_reasoning += current_line + "\n"
-                    current_line = word
-                else:
-                    if current_line:
-                        current_line += " " + word
-                    else:
-                        current_line = word
-            if current_line:
-                wrapped_reasoning += current_line
+        if isinstance(reasoning, dict):
+            reasoning = json.dumps(reasoning, ensure_ascii=False, indent=2)
+        elif not isinstance(reasoning, str):
+            reasoning = str(reasoning)
+        decision_table.add_row("Reasoning", f"[white]{reasoning}[/white]")
+        console.print(f"\n[bold white]TRADING DECISION:[/bold white] [cyan]{ticker}[/cyan]")
+        console.print(decision_table)
 
-        decision_data = [
-            ["Action", f"{action_color}{action}{Style.RESET_ALL}"],
-            ["Quantity", f"{action_color}{decision.get('quantity')}{Style.RESET_ALL}"],
-            [
-                "Confidence",
-                f"{Fore.WHITE}{decision.get('confidence'):.1f}%{Style.RESET_ALL}",
-            ],
-            ["Reasoning", f"{Fore.WHITE}{wrapped_reasoning}{Style.RESET_ALL}"],
-        ]
-        
-        print(f"\n{Fore.WHITE}{Style.BRIGHT}TRADING DECISION:{Style.RESET_ALL} [{Fore.CYAN}{ticker}{Style.RESET_ALL}]")
-        print(tabulate(decision_data, tablefmt="grid", colalign=("left", "left")))
+    # Portfolio Summary
+    console.print(f"\n[bold white]PORTFOLIO SUMMARY:[/bold white]")
+    portfolio_table = Table(show_header=True, header_style="bold magenta", box=None)
+    portfolio_table.add_column("Ticker", style="cyan", no_wrap=True)
+    portfolio_table.add_column("Action", style="bold", justify="center")
+    portfolio_table.add_column("Quantity", style="white", justify="right")
+    portfolio_table.add_column("Confidence", style="white", justify="right")
+    for ticker, decision in decisions.items():
+        action = decision.get("action", "").upper()
+        action_color = {
+            "BUY": "green",
+            "SELL": "red",
+            "HOLD": "yellow",
+            "COVER": "green",
+            "SHORT": "red",
+        }.get(action, "white")
+        portfolio_table.add_row(
+            f"[cyan]{ticker}[/cyan]",
+            f"[{action_color}]{action}[/{action_color}]",
+            f"[{action_color}]{decision.get('quantity')}[/{action_color}]",
+            f"[white]{decision.get('confidence'):.1f}%[/white]",
+        )
+    console.print(portfolio_table)
 
-    # Print Portfolio Summary
-    print(f"\n{Fore.WHITE}{Style.BRIGHT}PORTFOLIO SUMMARY:{Style.RESET_ALL}")
-    portfolio_data = []
-    
-    # Extract portfolio manager reasoning (common for all tickers)
+    # Portfolio Manager's reasoning
     portfolio_manager_reasoning = None
     for ticker, decision in decisions.items():
         if decision.get("reasoning"):
             portfolio_manager_reasoning = decision.get("reasoning")
             break
-            
-    for ticker, decision in decisions.items():
-        action = decision.get("action", "").upper()
-        action_color = {
-            "BUY": Fore.GREEN,
-            "SELL": Fore.RED,
-            "HOLD": Fore.YELLOW,
-            "COVER": Fore.GREEN,
-            "SHORT": Fore.RED,
-        }.get(action, Fore.WHITE)
-        portfolio_data.append(
-            [
-                f"{Fore.CYAN}{ticker}{Style.RESET_ALL}",
-                f"{action_color}{action}{Style.RESET_ALL}",
-                f"{action_color}{decision.get('quantity')}{Style.RESET_ALL}",
-                f"{Fore.WHITE}{decision.get('confidence'):.1f}%{Style.RESET_ALL}",
-            ]
-        )
-
-    headers = [f"{Fore.WHITE}Ticker", "Action", "Quantity", "Confidence"]
-    
-    # Print the portfolio summary table
-    print(
-        tabulate(
-            portfolio_data,
-            headers=headers,
-            tablefmt="grid",
-            colalign=("left", "center", "right", "right"),
-        )
-    )
-    
-    # Print Portfolio Manager's reasoning if available
     if portfolio_manager_reasoning:
-        # Handle different types of reasoning (string, dict, etc.)
-        reasoning_str = ""
-        if isinstance(portfolio_manager_reasoning, str):
-            reasoning_str = portfolio_manager_reasoning
-        elif isinstance(portfolio_manager_reasoning, dict):
-            # Convert dict to string representation
-            reasoning_str = json.dumps(portfolio_manager_reasoning, indent=2)
+        if isinstance(portfolio_manager_reasoning, dict):
+            reasoning_str = json.dumps(portfolio_manager_reasoning, ensure_ascii=False, indent=2)
         else:
-            # Convert any other type to string
             reasoning_str = str(portfolio_manager_reasoning)
-            
-        # Wrap long reasoning text to make it more readable
-        wrapped_reasoning = ""
-        current_line = ""
-        # Use a fixed width of 60 characters to match the table column width
-        max_line_length = 60
-        for word in reasoning_str.split():
-            if len(current_line) + len(word) + 1 > max_line_length:
-                wrapped_reasoning += current_line + "\n"
-                current_line = word
-            else:
-                if current_line:
-                    current_line += " " + word
-                else:
-                    current_line = word
-        if current_line:
-            wrapped_reasoning += current_line
-            
-        print(f"\n{Fore.WHITE}{Style.BRIGHT}Portfolio Strategy:{Style.RESET_ALL}")
-        print(f"{Fore.CYAN}{wrapped_reasoning}{Style.RESET_ALL}")
+        console.print(f"\n[bold white]Portfolio Strategy:[/bold white]")
+        console.print(f"[cyan]{reasoning_str}[/cyan]")
 
 
 def print_backtest_results(table_rows: list) -> None:
