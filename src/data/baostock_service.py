@@ -23,6 +23,8 @@ def logout_baostock():
 
 def get_financial_data(ticker, year, quarter):
     """获取财务数据并缓存"""
+    if not login_baostock():
+        return pd.DataFrame()
     cache_key = f"financials_{ticker}_{year}_{quarter}"
     cached = get_cached_data(cache_key)
     if cached is not None:

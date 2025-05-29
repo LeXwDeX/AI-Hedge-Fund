@@ -235,18 +235,24 @@ def analyze_consistency(financial_line_items: list) -> dict[str, any]:
     }
 
 
-def analyze_moat(metrics) -> dict[str, any]:
+def analyze_moat(metrics: FinancialMetrics) -> dict[str, any]:
     """
-    Evaluate whether the company likely has a durable competitive advantage (moat).
-    For simplicity, we look at stability of ROE/operating margins over multiple periods
-    or high margin over the last few years. Higher stability => higher moat score.
+    Evaluate whether the company has a durable competitive advantage (moat)
+    using the FinancialMetrics object directly.
     """
-    # Normalize metrics to a list for analysis
-    metrics_list = metrics if isinstance(metrics, list) else [metrics]
-
-    # Require at least one period for analysis
-    if len(metrics_list) < 1:
-        return {"score": 0, "max_score": 3, "details": "Insufficient data for moat analysis"}
+    score = 0
+    reasoning = []
+    # ROE indicator
+    if metrics.return_on_equity and metrics.return_on_equity > 0.15:
+        score += 1
+        reasoning.append("Return on equity above 15% indicating moat")
+    # Operating margin indicator
+    if metrics.operating_margin and metrics.operating_margin > 0.15:
+        score += 1
+        reasoning.append("Operating margin above 15% indicating moat")
+    max_score = 2
+    details = "; ".join(reasoning) if reasoning else "Insufficient data for moat analysis"
+    return {"score": score, "max_score": max_score, "details": details}
 
     reasoning = []
     moat_score = 0

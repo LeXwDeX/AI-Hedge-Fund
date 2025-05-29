@@ -60,12 +60,12 @@ export const agents: AgentItem[] = [
     "description": "The Macro Investor",
     "order": 8
   },
-  {
-    "key": "warren_buffett",
-    "display_name": "Warren Buffett",
-    "description": "The Oracle of Omaha",
-    "order": 9
-  },
+  // {
+  //   "key": "warren_buffett",
+  //   "display_name": "Warren Buffett",
+  //   "description": "The Oracle of Omaha",
+  //   "order": 9
+  // },
   {
     "key": "technical_analyst",
     "display_name": "Technical Analyst",
@@ -98,4 +98,4 @@ export function getAgentByKey(key: string): AgentItem | undefined {
 }
 
 // Get default agent to use
-export const defaultAgent = agents.find(agent => agent.key === "warren_buffett") || null; 
+export const defaultAgent = null;

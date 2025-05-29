@@ -8,7 +8,6 @@ from src.agents.phil_fisher import phil_fisher_agent
 from src.agents.peter_lynch import peter_lynch_agent
 from src.agents.stanley_druckenmiller import stanley_druckenmiller_agent
 from src.agents.technicals import technical_analyst_agent
-from src.agents.warren_buffett import warren_buffett_agent
 from src.agents.fundamentals import fundamentals_analyst_agent
 from src.agents.valuation import valuation_analyst_agent
 
@@ -33,11 +32,6 @@ ANALYST_CONFIG = {
         "display_name": "Cathie Wood",
         "agent_func": cathie_wood_agent,
         "order": 3,
-    },
-    "warren_buffett": {
-        "display_name": "Warren Buffett",
-        "agent_func": warren_buffett_agent,
-        "order": 4,
     },
     "fundamentals_analyst": {
         "display_name": "Fundamentals Analyst",

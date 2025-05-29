@@ -42,6 +42,8 @@ def parse_hedge_fund_response(response):
 
 
 ##### Run the Hedge Fund #####
+from src.data.baostock_service import login_baostock, logout_baostock
+
 def run_hedge_fund(
     tickers: list[str],
     start_date: str,
@@ -52,6 +54,8 @@ def run_hedge_fund(
     model_name: str = "gpt-4o",
     model_provider: str = "OpenAI",
 ):
+    # Login to Baostock before data requests
+    login_baostock()
     # Start progress tracking
     progress.start()
 
@@ -92,6 +96,8 @@ def run_hedge_fund(
     finally:
         # Stop progress tracking
         progress.stop()
+        # Logout from Baostock after all operations
+        logout_baostock()
 
 
 def start(state: AgentState):
