@@ -4,9 +4,16 @@ from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
 import json
 from typing_extensions import Literal
-from src.tools.api import get_financial_metrics, get_market_cap, search_line_items
+from src.tools.api import get_market_cap, search_line_items
+from src.data.baostock_service import get_financial_data
 from src.utils.llm import call_llm
 from src.utils.progress import progress
+
+class FinancialMetrics(BaseModel):
+    return_on_equity: float | None = None
+    debt_to_equity: float | None = None
+    operating_margin: float | None = None
+    current_ratio: float | None = None
 
 
 class WarrenBuffettSignal(BaseModel):
@@ -28,7 +35,19 @@ def warren_buffett_agent(state: AgentState):
     for ticker in tickers:
         progress.update_status("warren_buffett_agent", ticker, "Fetching financial metrics")
         # Fetch required data
-        metrics = get_financial_metrics(ticker, end_date, period="ttm", limit=5)
+        # 使用Baostock获取财务数据
+        metrics_df = get_financial_data(ticker, int(end_date[:4]), (int(end_date[5:7]) - 1) // 3 + 1)
+        
+        # 转换为FinancialMetrics对象
+        if not metrics_df.empty:
+            metrics = FinancialMetrics(
+                return_on_equity=float(metrics_df['roeAvg'].iloc[0]),
+                debt_to_equity=float(metrics_df['liabilityToAsset'].iloc[0]),
+                operating_margin=float(metrics_df['npMargin'].iloc[0]),
+                current_ratio=float(metrics_df['currentRatio'].iloc[0])
+            )
+        else:
+            metrics = FinancialMetrics()
 
         progress.update_status("warren_buffett_agent", ticker, "Gathering financial line items")
         financial_line_items = search_line_items(
@@ -138,51 +157,49 @@ def warren_buffett_agent(state: AgentState):
 
 def analyze_fundamentals(metrics: list) -> dict[str, any]:
     """Analyze company fundamentals based on Buffett's criteria."""
-    if not metrics:
+    if not hasattr(metrics, 'return_on_equity'):
         return {"score": 0, "details": "Insufficient fundamental data"}
-
-    latest_metrics = metrics[0]
 
     score = 0
     reasoning = []
 
     # Check ROE (Return on Equity)
-    if latest_metrics.return_on_equity and latest_metrics.return_on_equity > 0.15:  # 15% ROE threshold
+    if metrics.return_on_equity and metrics.return_on_equity > 0.15:  # 15% ROE threshold
         score += 2
-        reasoning.append(f"Strong ROE of {latest_metrics.return_on_equity:.1%}")
-    elif latest_metrics.return_on_equity:
-        reasoning.append(f"Weak ROE of {latest_metrics.return_on_equity:.1%}")
+        reasoning.append(f"Strong ROE of {metrics.return_on_equity:.1%}")
+    elif metrics.return_on_equity:
+        reasoning.append(f"Weak ROE of {metrics.return_on_equity:.1%}")
     else:
         reasoning.append("ROE data not available")
 
     # Check Debt to Equity
-    if latest_metrics.debt_to_equity and latest_metrics.debt_to_equity < 0.5:
+    if metrics.debt_to_equity and metrics.debt_to_equity < 0.5:
         score += 2
         reasoning.append("Conservative debt levels")
-    elif latest_metrics.debt_to_equity:
-        reasoning.append(f"High debt to equity ratio of {latest_metrics.debt_to_equity:.1f}")
+    elif metrics.debt_to_equity:
+        reasoning.append(f"High debt to equity ratio of {metrics.debt_to_equity:.1f}")
     else:
         reasoning.append("Debt to equity data not available")
 
     # Check Operating Margin
-    if latest_metrics.operating_margin and latest_metrics.operating_margin > 0.15:
+    if metrics.operating_margin and metrics.operating_margin > 0.15:
         score += 2
         reasoning.append("Strong operating margins")
-    elif latest_metrics.operating_margin:
-        reasoning.append(f"Weak operating margin of {latest_metrics.operating_margin:.1%}")
+    elif metrics.operating_margin:
+        reasoning.append(f"Weak operating margin of {metrics.operating_margin:.1%}")
     else:
         reasoning.append("Operating margin data not available")
 
     # Check Current Ratio
-    if latest_metrics.current_ratio and latest_metrics.current_ratio > 1.5:
+    if metrics.current_ratio and metrics.current_ratio > 1.5:
         score += 1
         reasoning.append("Good liquidity position")
-    elif latest_metrics.current_ratio:
-        reasoning.append(f"Weak liquidity with current ratio of {latest_metrics.current_ratio:.1f}")
+    elif metrics.current_ratio:
+        reasoning.append(f"Weak liquidity with current ratio of {metrics.current_ratio:.1f}")
     else:
         reasoning.append("Current ratio data not available")
 
-    return {"score": score, "details": "; ".join(reasoning), "metrics": latest_metrics.model_dump()}
+    return {"score": score, "details": "; ".join(reasoning), "metrics": metrics.model_dump()}
 
 
 def analyze_consistency(financial_line_items: list) -> dict[str, any]:
@@ -218,13 +235,17 @@ def analyze_consistency(financial_line_items: list) -> dict[str, any]:
     }
 
 
-def analyze_moat(metrics: list) -> dict[str, any]:
+def analyze_moat(metrics) -> dict[str, any]:
     """
     Evaluate whether the company likely has a durable competitive advantage (moat).
     For simplicity, we look at stability of ROE/operating margins over multiple periods
     or high margin over the last few years. Higher stability => higher moat score.
     """
-    if not metrics or len(metrics) < 3:
+    # Normalize metrics to a list for analysis
+    metrics_list = metrics if isinstance(metrics, list) else [metrics]
+
+    # Require at least one period for analysis
+    if len(metrics_list) < 1:
         return {"score": 0, "max_score": 3, "details": "Insufficient data for moat analysis"}
 
     reasoning = []
@@ -232,7 +253,7 @@ def analyze_moat(metrics: list) -> dict[str, any]:
     historical_roes = []
     historical_margins = []
 
-    for m in metrics:
+    for m in metrics_list:
         if m.return_on_equity is not None:
             historical_roes.append(m.return_on_equity)
         if m.operating_margin is not None:

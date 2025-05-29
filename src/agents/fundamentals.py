@@ -3,7 +3,7 @@ from src.graph.state import AgentState, show_agent_reasoning
 from src.utils.progress import progress
 import json
 
-from src.tools.api import get_financial_metrics
+from src.data.baostock_service import get_financial_data
 
 
 ##### Fundamental Agent #####
@@ -19,28 +19,26 @@ def fundamentals_analyst_agent(state: AgentState):
     for ticker in tickers:
         progress.update_status("fundamentals_analyst_agent", ticker, "Fetching financial metrics")
 
-        # Get the financial metrics
-        financial_metrics = get_financial_metrics(
-            ticker=ticker,
-            end_date=end_date,
-            period="ttm",
-            limit=10,
-        )
-
-        if not financial_metrics:
-            progress.update_status("fundamentals_analyst_agent", ticker, "Failed: No financial metrics found")
+        # 解析年份和季度
+        year = int(end_date[:4])
+        quarter = (int(end_date[5:7]) - 1) // 3 + 1
+        
+        # 获取财务数据
+        metrics_df = get_financial_data(ticker, year, quarter)
+        
+        if metrics_df.empty:
+            progress.update_status("fundamentals_analyst_agent", ticker, "Failed: No financial data found")
             continue
-
-        # Pull the most recent financial metrics
-        metrics = financial_metrics[0]
+            
+        # 提取关键指标
+        return_on_equity = float(metrics_df['roeAvg'].iloc[0]) if 'roeAvg' in metrics_df else None
+        net_margin = float(metrics_df['npMargin'].iloc[0]) if 'npMargin' in metrics_df else None
+        operating_margin = float(metrics_df['gpMargin'].iloc[0]) if 'gpMargin' in metrics_df else None
 
         # 只保留盈利能力分析
         reasoning = {}
 
         progress.update_status("fundamentals_analyst_agent", ticker, "Analyzing profitability")
-        return_on_equity = metrics.return_on_equity
-        net_margin = metrics.net_margin
-        operating_margin = metrics.operating_margin
 
         thresholds = [
             (return_on_equity, 0.15),

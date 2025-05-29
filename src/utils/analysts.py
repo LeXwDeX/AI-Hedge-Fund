@@ -8,6 +8,9 @@ from src.agents.phil_fisher import phil_fisher_agent
 from src.agents.peter_lynch import peter_lynch_agent
 from src.agents.stanley_druckenmiller import stanley_druckenmiller_agent
 from src.agents.technicals import technical_analyst_agent
+from src.agents.warren_buffett import warren_buffett_agent
+from src.agents.fundamentals import fundamentals_analyst_agent
+from src.agents.valuation import valuation_analyst_agent
 
 # Define analyst configuration - single source of truth
 ANALYST_CONFIG = {
@@ -31,20 +34,35 @@ ANALYST_CONFIG = {
         "agent_func": cathie_wood_agent,
         "order": 3,
     },
+    "warren_buffett": {
+        "display_name": "Warren Buffett",
+        "agent_func": warren_buffett_agent,
+        "order": 4,
+    },
+    "fundamentals_analyst": {
+        "display_name": "Fundamentals Analyst",
+        "agent_func": fundamentals_analyst_agent,
+        "order": 5,
+    },
     "peter_lynch": {
         "display_name": "Peter Lynch",
         "agent_func": peter_lynch_agent,
         "order": 6,
     },
+    "valuation_analyst": {
+        "display_name": "Valuation Analyst",
+        "agent_func": valuation_analyst_agent,
+        "order": 7,
+    },
     "phil_fisher": {
         "display_name": "Phil Fisher",
         "agent_func": phil_fisher_agent,
-        "order": 7,
+        "order": 8,
     },
     "stanley_druckenmiller": {
         "display_name": "Stanley Druckenmiller",
         "agent_func": stanley_druckenmiller_agent,
-        "order": 8,
+        "order": 9,
     },
     "technical_analyst": {
         "display_name": "Technical Analyst",

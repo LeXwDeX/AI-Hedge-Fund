@@ -62,7 +62,18 @@ class Cache:
         self._company_news_cache[ticker] = self._merge_data(self._company_news_cache.get(ticker), data, key_field="date")
 
 
-# Global cache instance
+# Simple key-value cache for generic data (e.g., DataFrame caching)
+_simple_cache: dict[str, any] = {}
+
+def cache_data(key: str, data: any, ttl: int):
+    """Cache arbitrary data with a key; ttl parameter is ignored in this in-memory cache."""
+    _simple_cache[key] = data
+
+def get_cached_data(key: str) -> any:
+    """Retrieve cached data by key."""
+    return _simple_cache.get(key)
+
+# Global cache instance for structured data
 _cache = Cache()
 
 

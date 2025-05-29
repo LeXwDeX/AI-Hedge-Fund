@@ -12,11 +12,8 @@ from langchain_core.messages import HumanMessage
 from src.graph.state import AgentState, show_agent_reasoning
 from src.utils.progress import progress
 
-from src.tools.api import (
-    get_financial_metrics,
-    get_market_cap,
-    search_line_items,
-)
+from src.data.baostock_service import get_financial_data
+from src.tools.api import get_market_cap
 
 def valuation_analyst_agent(state: AgentState):
     """Run valuation across tickers and write signals back to `state`."""
@@ -30,71 +27,31 @@ def valuation_analyst_agent(state: AgentState):
     for ticker in tickers:
         progress.update_status("valuation_analyst_agent", ticker, "Fetching financial data")
 
-        # --- Historical financial metrics (pull 8 latest TTM snapshots for medians) ---
-        financial_metrics = get_financial_metrics(
-            ticker=ticker,
-            end_date=end_date,
-            period="ttm",
-            limit=8,
-        )
-        if not financial_metrics:
-            progress.update_status("valuation_analyst_agent", ticker, "Failed: No financial metrics found")
+        # 解析年份和季度
+        year = int(end_date[:4])
+        quarter = (int(end_date[5:7]) - 1) // 3 + 1
+        
+        # 获取财务数据
+        metrics_df = get_financial_data(ticker, year, quarter)
+        
+        if metrics_df.empty:
+            progress.update_status("valuation_analyst_agent", ticker, "Failed: No financial data found")
             continue
-        most_recent_metrics = financial_metrics[0]
+            
+        # 提取关键指标
+        roe = float(metrics_df['roeAvg'].iloc[0]) if 'roeAvg' in metrics_df else None
+        net_margin = float(metrics_df['npMargin'].iloc[0]) if 'npMargin' in metrics_df else None
+        gp_margin = float(metrics_df['gpMargin'].iloc[0]) if 'gpMargin' in metrics_df else None
 
-        # --- Fine‑grained line‑items (need two periods to calc WC change) ---
-        progress.update_status("valuation_analyst_agent", ticker, "Gathering line items")
-        line_items = search_line_items(
-            ticker=ticker,
-            line_items=[
-                "free_cash_flow",
-                "net_income",
-                "depreciation_and_amortization",
-                "capital_expenditure",
-                "working_capital",
-            ],
-            end_date=end_date,
-            period="ttm",
-            limit=2,
-        )
-        if len(line_items) < 2:
-            progress.update_status("valuation_analyst_agent", ticker, "Failed: Insufficient financial line items")
-            continue
-        li_curr, li_prev = line_items[0], line_items[1]
-
-        # ------------------------------------------------------------------
-        # Valuation models
-        # ------------------------------------------------------------------
-        wc_change = li_curr.working_capital - li_prev.working_capital
-
-        # Owner Earnings
-        owner_val = calculate_owner_earnings_value(
-            net_income=li_curr.net_income,
-            depreciation=li_curr.depreciation_and_amortization,
-            capex=li_curr.capital_expenditure,
-            working_capital_change=wc_change,
-            growth_rate=most_recent_metrics.earnings_growth or 0.05,
-        )
-
-        # Discounted Cash Flow
-        dcf_val = calculate_intrinsic_value(
-            free_cash_flow=li_curr.free_cash_flow,
-            growth_rate=most_recent_metrics.earnings_growth or 0.05,
-            discount_rate=0.10,
-            terminal_growth_rate=0.03,
-            num_years=5,
-        )
-
-        # Implied Equity Value
-        ev_ebitda_val = calculate_ev_ebitda_value(financial_metrics)
-
-        # Residual Income Model
-        rim_val = calculate_residual_income_value(
-            market_cap=most_recent_metrics.market_cap,
-            net_income=li_curr.net_income,
-            price_to_book_ratio=most_recent_metrics.price_to_book_ratio,
-            book_value_growth=most_recent_metrics.book_value_growth or 0.03,
-        )
+        # 使用简化估值方法（示例）
+        # 实际应用中应根据Baostock提供的数据调整估值模型
+        pe_ratio = 15  # 假设合理PE
+        earnings = (net_margin or 0) * 1e9  # 假设10亿收入
+        dcf_val = earnings * pe_ratio
+        
+        owner_val = dcf_val * 0.8  # 简化计算
+        ev_ebitda_val = dcf_val * 0.9
+        rim_val = dcf_val * 0.85
 
         # ------------------------------------------------------------------
         # Aggregate & signal
@@ -105,8 +62,8 @@ def valuation_analyst_agent(state: AgentState):
             continue
 
         method_values = {
-            "dcf": {"value": dcf_val, "weight": 0.35},
-            "owner_earnings": {"value": owner_val, "weight": 0.35},
+            "dcf": {"value": dcf_val, "weight": 0.40},
+            "owner_earnings": {"value": owner_val, "weight": 0.30},
             "ev_ebitda": {"value": ev_ebitda_val, "weight": 0.20},
             "residual_income": {"value": rim_val, "weight": 0.10},
         }
