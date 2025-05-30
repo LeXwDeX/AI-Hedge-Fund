@@ -36,6 +36,9 @@ def call_llm(
 
     model_info = get_model_info(model_name, model_provider)
     llm = get_model(model_name, model_provider)
+    # 强制使用中文输入和输出
+    if isinstance(prompt, str):
+        prompt = f"请使用中文回答以下内容：\n{prompt}"
 
     # For non-JSON support models, we can use structured output
     if not (model_info and not model_info.has_json_mode()):

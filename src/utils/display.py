@@ -27,15 +27,15 @@ def print_trading_output(result: dict) -> None:
         return
 
     for ticker, decision in decisions.items():
-        console.print(f"\n[bold white]Analysis for [cyan]{ticker}[/cyan][/bold white]")
+        console.print(f"\n[bold white]对 [cyan]{ticker}[/cyan] 的分析[/bold white]")
         console.print(f"[bold white]{'=' * 50}[/bold white]")
 
         # AGENT 分析表
         table = Table(show_header=True, header_style="bold magenta", box=None)
-        table.add_column("Agent", style="cyan", no_wrap=True)
-        table.add_column("Signal", style="bold", justify="center")
-        table.add_column("Confidence", style="white", justify="right")
-        table.add_column("Reasoning", style="white", overflow="fold")
+        table.add_column("代理人", style="cyan", no_wrap=True)
+        table.add_column("信号", style="bold", justify="center")
+        table.add_column("置信度", style="white", justify="right")
+        table.add_column("理由", style="white", overflow="fold")
 
         agent_signals = []
         for agent, signals in result.get("analyst_signals", {}).items():
@@ -64,7 +64,7 @@ def print_trading_output(result: dict) -> None:
         agent_signals = sort_agent_signals(agent_signals)
         for row in agent_signals:
             table.add_row(*row)
-        console.print(f"\n[bold white]AGENT ANALYSIS:[/bold white] [cyan]{ticker}[/cyan]")
+        console.print(f"\n[bold white]代理人分析:[/bold white] [cyan]{ticker}[/cyan]")
         console.print(table)
 
         # 决策表
@@ -77,25 +77,25 @@ def print_trading_output(result: dict) -> None:
             "SHORT": "red",
         }.get(action, "white")
         decision_table = Table(show_header=False, box=None)
-        decision_table.add_row("Action", f"[{action_color}]{action}[/{action_color}]")
-        decision_table.add_row("Quantity", f"[{action_color}]{decision.get('quantity')}[/{action_color}]")
-        decision_table.add_row("Confidence", f"[white]{decision.get('confidence'):.1f}%[/white]")
+        decision_table.add_row("操作", f"[{action_color}]{action}[/{action_color}]")
+        decision_table.add_row("数量", f"[{action_color}]{decision.get('quantity')}[/{action_color}]")
+        decision_table.add_row("置信度", f"[white]{decision.get('confidence'):.1f}%[/white]")
         reasoning = decision.get("reasoning", "")
         if isinstance(reasoning, dict):
             reasoning = json.dumps(reasoning, ensure_ascii=False, indent=2)
         elif not isinstance(reasoning, str):
             reasoning = str(reasoning)
-        decision_table.add_row("Reasoning", f"[white]{reasoning}[/white]")
-        console.print(f"\n[bold white]TRADING DECISION:[/bold white] [cyan]{ticker}[/cyan]")
+        decision_table.add_row("理由", f"[white]{reasoning}[/white]")
+        console.print(f"\n[bold white]交易决策:[/bold white] [cyan]{ticker}[/cyan]")
         console.print(decision_table)
 
     # Portfolio Summary
-    console.print(f"\n[bold white]PORTFOLIO SUMMARY:[/bold white]")
+        console.print(f"\n[bold white]投资组合摘要:[/bold white]")
     portfolio_table = Table(show_header=True, header_style="bold magenta", box=None)
-    portfolio_table.add_column("Ticker", style="cyan", no_wrap=True)
-    portfolio_table.add_column("Action", style="bold", justify="center")
-    portfolio_table.add_column("Quantity", style="white", justify="right")
-    portfolio_table.add_column("Confidence", style="white", justify="right")
+    portfolio_table.add_column("代码", style="cyan", no_wrap=True)
+    portfolio_table.add_column("操作", style="bold", justify="center")
+    portfolio_table.add_column("数量", style="white", justify="right")
+    portfolio_table.add_column("置信度", style="white", justify="right")
     for ticker, decision in decisions.items():
         action = decision.get("action", "").upper()
         action_color = {
@@ -124,7 +124,7 @@ def print_trading_output(result: dict) -> None:
             reasoning_str = json.dumps(portfolio_manager_reasoning, ensure_ascii=False, indent=2)
         else:
             reasoning_str = str(portfolio_manager_reasoning)
-        console.print(f"\n[bold white]Portfolio Strategy:[/bold white]")
+        console.print(f"\n[bold white]投资组合策略:[/bold white]")
         console.print(f"[cyan]{reasoning_str}[/cyan]")
 
 
@@ -147,7 +147,7 @@ def print_backtest_results(table_rows: list) -> None:
     # Display latest portfolio summary
     if summary_rows:
         latest_summary = summary_rows[-1]
-        print(f"\n{Fore.WHITE}{Style.BRIGHT}PORTFOLIO SUMMARY:{Style.RESET_ALL}")
+        print(f"\n{Fore.WHITE}{Style.BRIGHT}投资组合摘要:{Style.RESET_ALL}")
 
         # Extract values and remove commas before converting to float
         cash_str = latest_summary[7].split("$")[1].split(Style.RESET_ALL)[0].replace(",", "")
@@ -172,19 +172,18 @@ def print_backtest_results(table_rows: list) -> None:
 
     # Print the table with just ticker rows
     print(
-        tabulate(
             ticker_rows,
             headers=[
-                "Date",
-                "Ticker",
-                "Action",
-                "Quantity",
-                "Price",
-                "Shares",
-                "Position Value",
-                "Bullish",
-                "Bearish",
-                "Neutral",
+                "日期",
+                "代码",
+                "操作",
+                "数量",
+                "价格",
+                "持股",
+                "持仓价值",
+                "看涨",
+                "看跌",
+                "中性",
             ],
             tablefmt="grid",
             colalign=(
@@ -199,7 +198,6 @@ def print_backtest_results(table_rows: list) -> None:
                 "right",  # Bearish
                 "right",  # Neutral
             ),
-        )
     )
 
     # Add vertical spacing
